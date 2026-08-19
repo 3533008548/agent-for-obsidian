@@ -1,0 +1,26 @@
+{
+  "name": "knowledge-loop-agent",
+  "version": "0.16.0",
+  "description": "A permissioned personal knowledge agent for Obsidian.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
+    "typecheck": "tsc --noEmit --skipLibCheck",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "obsidian",
+    "agent",
+    "knowledge-management"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "esbuild": "^0.28.2",
+    "obsidian": "^1.13.1",
+    "tslib": "^2.8.1",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.10"
+  }
+}
