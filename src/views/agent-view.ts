@@ -1,8 +1,7 @@
 import { ItemView, MarkdownRenderer, WorkspaceLeaf } from "obsidian";
-import type { WritePreview } from "../actions/vault-action-service";
 import { getAgentToolDefinition, type AgentRun } from "../runtime/agent-runtime";
 import type { AgentSession, AgentSessionMessage } from "../memory/agent-memory";
-import type { AgentSessionPreview } from "../main";
+import type { AgentSessionPreview, LlmWikiWritePreview, RuntimeWritePreview } from "../main";
 import type KnowledgeLoopAgentPlugin from "../main";
 
 export const AGENT_VIEW_TYPE = "knowledge-loop-agent-view";
@@ -14,7 +13,7 @@ export class KnowledgeLoopAgentView extends ItemView {
   private composer: HTMLTextAreaElement | null = null;
   private agentRun: AgentRun | null = null;
   private pendingSession: PendingSession | null = null;
-  private pendingWritePreview: WritePreview | null = null;
+  private pendingWritePreview: RuntimeWritePreview | null = null;
   private busy = false;
 
   constructor(
@@ -208,7 +207,11 @@ export class KnowledgeLoopAgentView extends ItemView {
     });
   }
 
-  private renderWritePreview(chat: HTMLElement, preview: WritePreview): void {
+  private renderWritePreview(chat: HTMLElement, preview: RuntimeWritePreview): void {
+    if (isLlmWikiWritePreview(preview)) {
+      this.renderLlmWikiWritePreview(chat, preview);
+      return;
+    }
     const title = preview.proposal.type === "updateAgentProfile" ? "用户画像更新预览" : "Agent 写入预览";
     const card = this.createCard(chat, title, `目标：${preview.targetPath}`);
     card.createEl("pre", { text: preview.afterContent });
@@ -219,6 +222,25 @@ export class KnowledgeLoopAgentView extends ItemView {
       await this.renderChat();
     }, "mod-cta");
     this.createButton(actions, "取消", "取消本次写入", () => {
+      this.pendingWritePreview = null;
+      void this.renderChat();
+    });
+  }
+
+  private renderLlmWikiWritePreview(chat: HTMLElement, preview: LlmWikiWritePreview): void {
+    const card = this.createCard(chat, "LLM Wiki 写入预览", `主题：${preview.topic} · 将创建或更新 ${preview.previews.length} 个页面。`);
+    for (const page of preview.previews) {
+      const detail = card.createEl("details");
+      detail.createEl("summary", { text: `${page.existedBefore ? "更新" : "创建"}：${page.targetPath}` });
+      detail.createEl("pre", { text: page.afterContent });
+    }
+    const actions = card.createDiv({ cls: "knowledge-loop-agent-card-actions" });
+    this.createButton(actions, "确认写入", "确认写入本次 LLM Wiki 页面", async () => {
+      await this.plugin.applyLlmWikiWritePreview(preview);
+      this.pendingWritePreview = null;
+      await this.renderChat();
+    }, "mod-cta");
+    this.createButton(actions, "取消", "取消本次 LLM Wiki 写入", () => {
       this.pendingWritePreview = null;
       void this.renderChat();
     });
@@ -379,4 +401,8 @@ export class KnowledgeLoopAgentView extends ItemView {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "发生未知错误。";
+}
+
+function isLlmWikiWritePreview(preview: RuntimeWritePreview): preview is LlmWikiWritePreview {
+  return "kind" in preview && preview.kind === "llm-wiki";
 }

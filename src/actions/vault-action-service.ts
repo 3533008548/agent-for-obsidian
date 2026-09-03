@@ -11,6 +11,7 @@ import {
   validateActionProposal,
   type AgentActionProposal
 } from "./action-proposal";
+import { mergeManagedNoteRelations } from "../integration/note-relations";
 
 export interface WritePreview {
   proposal: AgentActionProposal;
@@ -66,6 +67,11 @@ export class VaultActionService {
     if (existing && !(existing instanceof TFile)) {
       throw new Error("目标路径已被同名文件夹占用。");
     }
+    if (proposal.type === "modifyExistingNote" && !existing) {
+      throw new Error(proposal.updateMode === "replace"
+        ? "要更新的 Wiki 页面不存在；请重新生成预览。"
+        : "关联补全只能修改已存在的 Markdown 笔记。 ");
+    }
 
     const beforeContent = existing ? await this.vault.read(existing) : "";
     const now = new Date();
@@ -79,7 +85,11 @@ export class VaultActionService {
             ? renderAgentSessionAppend(proposal, beforeContent)
             : proposal.type === "updateAgentProfile"
               ? renderAgentProfileUpdate(proposal)
-              : renderDailyAppend(proposal, beforeContent, now);
+              : proposal.type === "modifyExistingNote"
+                ? proposal.updateMode === "replace"
+                  ? `${proposal.content.trimEnd()}\n`
+                  : mergeManagedNoteRelations(beforeContent, proposal.content)
+                : renderDailyAppend(proposal, beforeContent, now);
 
     return {
       proposal,

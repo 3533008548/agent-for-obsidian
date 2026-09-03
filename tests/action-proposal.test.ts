@@ -31,6 +31,17 @@ describe("action proposals", () => {
       .toBe("知识体系/Agent/机器学习知识地图.md");
   });
 
+  it("keeps a compiled Wiki page in a stable path below the knowledge-system folder", () => {
+    const proposal = createKnowledgeSystemProposal(
+      "LangGraph LLM Wiki",
+      "主题概览。",
+      [createManualCaptureSource("主题概览。")],
+      "LLM Wiki/LangGraph/概览.md"
+    );
+    expect(buildActionTargetPath(proposal, "00 Inbox/Agent", "daily", "知识体系/Agent"))
+      .toBe("知识体系/Agent/LLM Wiki/LangGraph/概览.md");
+  });
+
   it("requires nonempty content and a source", () => {
     expect(validateActionProposal({
       type: "createInboxNote",
@@ -64,5 +75,15 @@ describe("action proposals", () => {
     expect(buildActionTargetPath(proposal, "00 Inbox/Agent", "daily", "知识体系/Agent", "00 Inbox/Agent"))
       .toBe("00 Inbox/Agent/Sessions/2026-08-17-demo.md");
     expect(renderAgentSessionAppend(proposal, "# 会话")).toContain("# 会话\n\n## 新记录");
+  });
+
+  it("keeps an existing-note update pinned to its explicit Vault path", () => {
+    const proposal = {
+      type: "modifyExistingNote" as const,
+      notePath: "RAG/总览.md",
+      content: "- 前置概念：[[RAG/向量检索.md]]",
+      sources: [createManualCaptureSource("关联提案")]
+    };
+    expect(buildActionTargetPath(proposal, "00 Inbox/Agent", "daily")).toBe("RAG/总览.md");
   });
 });

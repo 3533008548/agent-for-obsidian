@@ -4,6 +4,7 @@ import {
   createManualCaptureProposal,
   createKnowledgeSystemProposal,
   createSourcedCaptureProposal,
+  renderCreatedKnowledgeSystemNote,
   type AgentActionProposal,
   type ManualCaptureAction
 } from "./actions/action-proposal";
@@ -37,7 +38,7 @@ import {
   MarkdownKnowledgeIndex,
   type MarkdownIndexSummary
 } from "./indexing/markdown-knowledge-index";
-import type { MarkdownSearchResult } from "./indexing/markdown-search";
+import { selectDiverseSearchResults, type MarkdownSearchResult } from "./indexing/markdown-search";
 import {
   AttachmentIndex,
   getAttachmentMimeType,
@@ -50,7 +51,8 @@ import {
   type AttachmentBatchQueueState,
   type AttachmentBatchStatus
 } from "./indexing/attachment-batch-queue";
-import { hashArrayBuffer } from "./domain/content-hash";
+import { hashArrayBuffer, hashText } from "./domain/content-hash";
+import type { SourceRef } from "./domain/source-ref";
 import {
   renderWebAnswerCaptureContent,
   type WebSearchResult
@@ -65,6 +67,23 @@ import {
   type KnowledgeIntegrationSource,
   type KnowledgeMapNode
 } from "./integration/knowledge-system";
+import {
+  compileLlmWikiTopic,
+  createLlmWikiRegistry,
+  extractLlmWikiTopic,
+  getLinkedWikiPages,
+  isLlmWikiPath,
+  markLlmWikiSourceStale,
+  searchLlmWiki,
+  type LlmWikiPageRecord,
+  type LlmWikiRegistry,
+  type LlmWikiPageDraft
+} from "./wiki/llm-wiki-system";
+import {
+  CURRENT_NOTE_SOURCE_ID,
+  renderNoteRelationItems,
+  type NoteRelationPlan
+} from "./integration/note-relations";
 import { formatPastedContent } from "./paste/paste-formatter";
 import { PasteFormatPreviewModal } from "./views/paste-format-preview-modal";
 import {
@@ -72,7 +91,10 @@ import {
   type GardenerPlan
 } from "./gardener/knowledge-gardener";
 import {
+  createLocalKnowledgeFallbackPlan,
   createAgentRun,
+  ensureKnowledgeOrganizationPlan,
+  ensureLlmWikiTraversalPlan,
   type AgentRun,
   type AgentRunPlan,
   type AgentRunStep,
@@ -107,11 +129,14 @@ interface PersistedPluginData {
   attachmentBatchQueue?: AttachmentBatchQueueState;
   agentRuns?: AgentRun[];
   agentSessions?: AgentSessionStoreState;
+  llmWikiRegistry?: LlmWikiRegistry;
 }
 
 type PermissionPolicyPatch = Omit<Partial<PermissionPolicy>, "enabled"> & {
   enabled?: Partial<Record<PolicyAction, boolean>>;
 };
+
+const KNOWLEDGE_INTEGRATION_SEARCH_LIMIT = 80;
 
 export interface WebSearchRun {
   answer: string;
@@ -138,7 +163,14 @@ export interface AttachmentBatchRunResult {
 
 type RuntimeAnswerArtifact =
   | { kind: "vault"; query: string; content: string; sources: MarkdownSearchResult[] }
+  | { kind: "wiki"; query: string; content: string; sources: SourceRef[]; traversedPaths: string[] }
   | { kind: "web"; query: string; content: string; sources: WebSearchResult[] };
+
+interface WikiTraversalState {
+  query: string;
+  candidates: LlmWikiPageRecord[];
+  pages: Array<{ page: LlmWikiPageRecord; content: string }>;
+}
 
 export interface AgentSessionPreview {
   session: AgentSession;
@@ -150,6 +182,19 @@ export interface AgentMemoryStatus {
   profileExists: boolean;
   activeSession: AgentSession | null;
   sessionCount: number;
+}
+
+export interface LlmWikiWritePreview {
+  kind: "llm-wiki";
+  topic: string;
+  previews: WritePreview[];
+  nextRegistry: LlmWikiRegistry;
+}
+
+export type RuntimeWritePreview = WritePreview | LlmWikiWritePreview;
+
+export function isLlmWikiWritePreview(preview: RuntimeWritePreview): preview is LlmWikiWritePreview {
+  return "kind" in preview && preview.kind === "llm-wiki";
 }
 
 export default class KnowledgeLoopAgentPlugin extends Plugin {
@@ -166,11 +211,13 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
   private attachmentBatchRun: Promise<AttachmentBatchRunResult> | null = null;
   private agentRunStore = new AgentRunStore();
   private agentSessionStore = new AgentSessionStore();
+  private llmWikiRegistry = createLlmWikiRegistry();
   private agentToolRegistry!: ReturnType<typeof createAgentToolRegistry>;
   private runtimeArtifacts: {
     answer?: RuntimeAnswerArtifact;
     knowledgeMap?: KnowledgeIntegrationSession;
-    writePreview?: WritePreview;
+    wikiTraversal?: WikiTraversalState;
+    writePreview?: RuntimeWritePreview;
   } = {};
   private vaultActionService!: VaultActionService;
   private saveQueue: Promise<void> = Promise.resolve();
@@ -187,6 +234,7 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
       this.app.vault,
       (path) => isAgentMemoryPath(path, this.settings.permissions.agentMemoryFolder)
     );
+    await this.markdownIndex.rebuild(this.getPolicyEngine());
     this.vaultActionService = new VaultActionService(
       this.app.vault,
       () => this.getPolicyEngine(),
@@ -246,9 +294,19 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     this.addSettingTab(new KnowledgeLoopSettingTab(this.app, this));
 
     this.registerEvent(
+      this.app.vault.on("create", (file) => {
+        if (file instanceof TFile) {
+          void this.markdownIndex.refreshFile(file, this.getPolicyEngine());
+          this.markLlmWikiSourceStale(file.path);
+        }
+      })
+    );
+
+    this.registerEvent(
       this.app.vault.on("modify", (file) => {
         if (file instanceof TFile) {
           void this.markdownIndex.refreshFile(file, this.getPolicyEngine());
+          this.markLlmWikiSourceStale(file.path);
         }
       })
     );
@@ -256,16 +314,18 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
         this.markdownIndex.remove(file.path);
+        this.markLlmWikiSourceStale(file.path);
       })
     );
 
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        if (!(file instanceof TFile) || !this.markdownIndex.has(oldPath)) {
+        if (!(file instanceof TFile)) {
           return;
         }
         this.markdownIndex.remove(oldPath);
-        void this.markdownIndex.refreshFile(file, this.getPolicyEngine(), true);
+        this.markLlmWikiSourceStale(oldPath);
+        void this.markdownIndex.refreshFile(file, this.getPolicyEngine());
       })
     );
   }
@@ -301,6 +361,9 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
         }
       }
     };
+    if (savedSettings.requestTimeoutMs === 30_000) {
+      this.settings.requestTimeoutMs = DEFAULT_SETTINGS.requestTimeoutMs;
+    }
     this.settings.webFallbackPolicy = normalizeWebFallbackPolicy(this.settings.webFallbackPolicy);
     this.auditTrail = new AuditTrail(persisted.auditEvents ?? []);
     this.attachmentIndex = new AttachmentIndex(persisted.attachmentRecords ?? []);
@@ -308,6 +371,7 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     this.attachmentBatchQueue = new AttachmentBatchQueue(persisted.attachmentBatchQueue);
     this.agentRunStore = new AgentRunStore(persisted.agentRuns ?? []);
     this.agentSessionStore = new AgentSessionStore(persisted.agentSessions);
+    this.llmWikiRegistry = createLlmWikiRegistry(persisted.llmWikiRegistry);
   }
 
   async updateSettings(patch: Partial<KnowledgeLoopSettings>): Promise<void> {
@@ -434,13 +498,14 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     return summary;
   }
 
-  searchKnowledge(query: string): MarkdownSearchResult[] {
-    return [
-      ...this.markdownIndex.search(query),
-      ...this.attachmentIndex.search(query, this.getPolicyEngine())
-    ]
-      .sort((left, right) => right.score - left.score)
-      .slice(0, 8);
+  searchKnowledge(query: string, limit = 8): MarkdownSearchResult[] {
+    const ranked = [
+      ...this.markdownIndex.search(query, limit),
+      ...this.attachmentIndex.search(query, this.getPolicyEngine(), limit)
+    ].sort((left, right) =>
+      right.score - left.score || left.chunk.source.pathOrUrl.localeCompare(right.chunk.source.pathOrUrl)
+    );
+    return selectDiverseSearchResults(ranked, limit);
   }
 
   async scanAttachments(): Promise<AttachmentScanSummary> {
@@ -639,11 +704,43 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
             return {
               summary: error.message,
               replanFeedback: error.replanFeedback,
-              replanExclusions: [{ tool: "research", action: "answer-vault" }]
+              replanExclusions: [{ tool: "research", action: "answer-vault" }],
+              autoContinue: error.autoContinue
             };
           }
           throw error;
         }
+      },
+      "research:wiki-search": async ({ goal }) => {
+        const candidates = this.searchLlmWikiPages(goal);
+        this.runtimeArtifacts.wikiTraversal = { query: goal, candidates, pages: [] };
+        return { summary: `LLM Wiki 搜索命中 ${candidates.length} 个页面：${candidates.map((page) => page.title).join("、")}。` };
+      },
+      "research:wiki-read": async () => {
+        const traversal = this.requireWikiTraversal();
+        const pages = await this.readLlmWikiPages(traversal.candidates.slice(0, 2));
+        traversal.pages = pages;
+        return { summary: `已阅读 ${pages.length} 个 Wiki 页面：${pages.map(({ page }) => page.title).join("、")}。` };
+      },
+      "research:wiki-follow": async () => {
+        const traversal = this.requireWikiTraversal();
+        const linked = getLinkedWikiPages(this.llmWikiRegistry, traversal.pages.map(({ page }) => page));
+        const pages = await this.readLlmWikiPages(linked);
+        traversal.pages = deduplicateWikiPages([...traversal.pages, ...pages]);
+        return { summary: pages.length
+          ? `已沿 Wiki 链接继续阅读：${pages.map(({ page }) => page.title).join("、")}。`
+          : "已读页面没有可继续跟随的 Wiki 链接；将使用当前证据回答。" };
+      },
+      "research:answer-wiki": async ({ goal }) => {
+        const answer = await this.answerFromLlmWiki(goal);
+        this.runtimeArtifacts.answer = {
+          kind: "wiki",
+          query: goal,
+          content: answer.content,
+          sources: answer.sources,
+          traversedPaths: answer.traversedPaths
+        };
+        return { summary: `已基于 ${answer.traversedPaths.length} 个 Wiki 页面生成回答。`, artifact: "answer" };
       },
       "research:answer-web": async ({ goal }) => {
         const answer = await this.searchWeb(goal);
@@ -654,10 +751,34 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
         const report = await this.analyzeKnowledgeMaintenance(goal);
         return { summary: `知识库维护分析完成：发现 ${report.findings.length} 项问题。${report.summary}` };
       },
+      "organize:note-relations": async () => {
+        const result = await this.prepareCurrentNoteRelations();
+        if (!result.preview) {
+          return { summary: `关联分析完成：${result.plan.summary} 未发现需要补充的高置信度关联。` };
+        }
+        this.runtimeArtifacts.writePreview = result.preview;
+        return {
+          summary: `关联分析完成：${result.plan.summary} 已生成 ${result.plan.relations.length} 条关联的写入预览。`,
+          artifact: "write-preview"
+        };
+      },
       "organize:knowledge-map": async ({ goal }) => {
         const session = await this.createKnowledgeMap(goal, "search-results", goal);
         this.runtimeArtifacts.knowledgeMap = session;
-        return { summary: `已生成知识地图：${session.map.nodes.length} 个节点。`, artifact: "knowledge-map" };
+        this.runtimeArtifacts.writePreview = await this.previewKnowledgeMap(session);
+        return {
+          summary: `已生成知识地图：${session.map.nodes.length} 个节点，并已生成知识体系笔记写入预览。`,
+          artifact: "write-preview"
+        };
+      },
+      "organize:compile-wiki": async ({ goal }) => {
+        const result = await this.previewLlmWiki(goal);
+        this.runtimeArtifacts.knowledgeMap = result.session;
+        this.runtimeArtifacts.writePreview = result.preview;
+        return {
+          summary: `已${result.updating ? "更新" : "生成"} LLM Wiki：${result.session.map.nodes.length} 个概念、${result.session.sources.length} 条来源；已生成写入预览。`,
+          artifact: "write-preview"
+        };
       },
       "organize:knowledge-node": async () => {
         const session = this.requireRuntimeKnowledgeMap();
@@ -703,6 +824,101 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     return this.runtimeArtifacts.knowledgeMap;
   }
 
+  private requireWikiTraversal(): WikiTraversalState {
+    const traversal = this.runtimeArtifacts.wikiTraversal;
+    if (!traversal) {
+      throw new RuntimeToolBlockedError("此步骤需要本次运行先搜索 LLM Wiki；运行重启后请重新开始 Wiki 遍历。 ");
+    }
+    return traversal;
+  }
+
+  private searchLlmWikiPages(query: string): LlmWikiPageRecord[] {
+    const candidates = searchLlmWiki(this.llmWikiRegistry, query).map((result) => result.page);
+    if (!candidates.length) {
+      throw new RuntimeToolBlockedError("当前 LLM Wiki 没有命中页面；请先编译相关主题，或改用原始资料检索。 ");
+    }
+    return candidates;
+  }
+
+  private hasRelevantLlmWiki(query: string): boolean {
+    return searchLlmWiki(this.llmWikiRegistry, query, 1).length > 0;
+  }
+
+  private async readLlmWikiPages(records: LlmWikiPageRecord[]): Promise<Array<{ page: LlmWikiPageRecord; content: string }>> {
+    const pages: Array<{ page: LlmWikiPageRecord; content: string }> = [];
+    for (const page of records) {
+      const decision = this.getPolicyEngine().decide({ action: "readVault", targetPath: page.path });
+      this.recordPolicyDecision(decision);
+      if (!decision.allowed) {
+        continue;
+      }
+      const file = this.app.vault.getAbstractFileByPath(page.path);
+      if (file instanceof TFile) {
+        pages.push({ page, content: await this.app.vault.read(file) });
+      }
+    }
+    if (!pages.length) {
+      throw new RuntimeToolBlockedError("已命中的 LLM Wiki 页面不可读取或已被删除；请重新编译该主题。 ");
+    }
+    return pages;
+  }
+
+  private async answerFromLlmWiki(question: string): Promise<{
+    content: string;
+    sources: SourceRef[];
+    traversedPaths: string[];
+  }> {
+    if (!this.hasDeepSeekApiKey()) {
+      throw new Error("请在插件目录的 .env 文件中填写 DEEPSEEK_API_KEY，然后重新加载。 ");
+    }
+    const traversal = this.requireWikiTraversal();
+    if (!traversal.pages.length) {
+      throw new RuntimeToolBlockedError("本次 Wiki 遍历尚未读取页面，不能据此回答。 ");
+    }
+    const permitted = traversal.pages.filter(({ page }) => {
+      const decision = this.getPolicyEngine().decide({ action: "sendToGlm", targetPath: page.path });
+      this.recordPolicyDecision(decision);
+      return decision.allowed;
+    });
+    if (!permitted.length) {
+      throw new RuntimeToolBlockedError("已读 Wiki 页面没有获准发送给模型，无法生成回答。 ");
+    }
+    const modelSources = permitted.map(({ page, content }, index) => ({
+      id: index + 1,
+      path: page.path,
+      locator: "llm-wiki-page",
+      content
+    }));
+    const startedAt = Date.now();
+    try {
+      const response = await this.requestGate.run(`deepseek-wiki:${question.trim()}:${modelSources.map((source) => source.path).join("|")}`, () =>
+        this.getDeepSeekClient().answerWithSources(question, modelSources, "")
+      );
+      const content = renderWikiAnswerCitations(response.content, permitted.map(({ page }) => page));
+      this.auditTrail.recordModelRequest(
+        "succeeded",
+        `DeepSeek LLM Wiki 问答${response.evidenceComplete ? "成功" : "存在证据缺口"}：${response.model}，${response.durationMs}ms，页面 ${modelSources.length} 个；总耗时 ${Date.now() - startedAt}ms。`
+      );
+      await this.appendActiveSessionEntry(renderSessionExchange(question, content));
+      await this.savePluginData();
+      return {
+        content,
+        sources: permitted.map(({ page, content }) => ({
+          type: "note",
+          pathOrUrl: page.path,
+          locator: "llm-wiki-page",
+          contentHash: hashText(content),
+          parserVersion: "llm-wiki-v2"
+        })),
+        traversedPaths: permitted.map(({ page }) => page.path)
+      };
+    } catch (error) {
+      this.auditTrail.recordModelRequest("failed", `DeepSeek LLM Wiki 问答失败（${Date.now() - startedAt}ms）：${formatModelRequestError(error)}`);
+      await this.savePluginData();
+      throw error;
+    }
+  }
+
   private requireActiveEditor(): Editor {
     const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
     if (!editor) {
@@ -718,9 +934,11 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     }
     const preview = answer.kind === "vault"
       ? await this.suggestCaptureFromAnswer(type, answer.content, answer.sources)
-      : answer.sources.length
-        ? await this.previewWebSearchCapture(type, answer.query, answer.content, answer.sources)
-        : null;
+      : answer.kind === "wiki"
+        ? await this.suggestCaptureFromSources(type, answer.content, answer.sources)
+        : answer.sources.length
+          ? await this.previewWebSearchCapture(type, answer.query, answer.content, answer.sources)
+          : null;
     if (!preview) {
       throw new RuntimeToolBlockedError("通用联网兜底回答没有可追溯网页来源，不能自动生成写入预览。 ");
     }
@@ -748,7 +966,7 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     return session ? this.agentRunStore.getLatestForSession(session.id) : null;
   }
 
-  getRuntimeWritePreview(): WritePreview | null {
+  getRuntimeWritePreview(): RuntimeWritePreview | null {
     return this.runtimeArtifacts.writePreview ?? null;
   }
 
@@ -906,8 +1124,13 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     }
     try {
       const memoryContext = await this.buildModelMemoryContext();
-      const plan = await this.requestGate.run(`agent-runtime-plan:${normalizedGoal}`, () =>
+      const modelPlan = await this.requestGate.run(`agent-runtime-plan:${normalizedGoal}`, () =>
         this.getDeepSeekClient().planAgentRun(normalizedGoal, memoryContext)
+      );
+      const plan = ensureLlmWikiTraversalPlan(
+        normalizedGoal,
+        ensureKnowledgeOrganizationPlan(normalizedGoal, modelPlan),
+        this.hasRelevantLlmWiki(normalizedGoal)
       );
       this.runtimeArtifacts = {};
       const run = this.agentRunStore.add(createAgentRun(
@@ -945,10 +1168,16 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     if (run.replanCount >= 1) {
       throw new Error("每次 Agent 运行最多重新规划一次；请新建运行继续。 ");
     }
-    const memoryContext = await this.buildModelMemoryContext();
-    const plan = await this.requestGate.run(`agent-runtime-replan:${runId}:${run.replanCount}`, () =>
-      this.getDeepSeekClient().planAgentRun(run.goal, memoryContext, replanFeedback)
-    );
+    const shouldUseWebFallback = this.hasTavilyApiKey() &&
+      excludedCalls.some((call) => call.tool === "research" && call.action === "answer-vault") &&
+      replanFeedback.includes("本地知识库检索");
+    const plan = shouldUseWebFallback
+      ? createLocalKnowledgeFallbackPlan(run.goal)
+      : ensureLlmWikiTraversalPlan(
+        run.goal,
+        ensureKnowledgeOrganizationPlan(run.goal, await this.requestAgentReplan(runId, run.replanCount, run.goal, replanFeedback)),
+        this.hasRelevantLlmWiki(run.goal)
+      );
     if (excludedCalls.some((excluded) => plan.steps.some((step) => step.tool === excluded.tool && step.action === excluded.action))) {
       throw new Error("替代计划仍重复安排了已知无结果的工具动作；已拒绝该计划。请发送新的目标继续。 ");
     }
@@ -961,6 +1190,18 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     await this.appendActiveSessionEntry(renderSessionToolResult(replanLabel, `${plan.summary}\n${plan.steps.map((step, index) => `${index + 1}. ${step.title}`).join("\n")}`));
     await this.savePluginData();
     return updated;
+  }
+
+  private async requestAgentReplan(
+    runId: string,
+    replanCount: number,
+    goal: string,
+    replanFeedback: string
+  ): Promise<AgentRunPlan> {
+    const memoryContext = await this.buildModelMemoryContext();
+    return this.requestGate.run(`agent-runtime-replan:${runId}:${replanCount}`, () =>
+      this.getDeepSeekClient().planAgentRun(goal, memoryContext, replanFeedback)
+    );
   }
 
   async executeAgentRunStep(runId: string, stepId: string, confirmed = false): Promise<AgentRun> {
@@ -995,7 +1236,8 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
       await this.savePluginData();
       if (result.replanFeedback && updated.replanCount < 1) {
         try {
-          return await this.replanAgentRun(runId, result.replanFeedback, result.replanExclusions);
+          const replanned = await this.replanAgentRun(runId, result.replanFeedback, result.replanExclusions);
+          return result.autoContinue ? this.continueEvidenceCompletion(replanned) : replanned;
         } catch (replanError) {
           const replanMessage = replanError instanceof Error ? replanError.message : "未知错误。";
           this.auditTrail.recordAgentRun("failed", runId, `Agent 自动调整计划失败：${replanMessage}`);
@@ -1164,7 +1406,9 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
   async createKnowledgeMap(
     topic: string,
     scope: "current-note" | "search-results" | "folder",
-    value: string
+    value: string,
+    sourceFilter?: (path: string) => boolean,
+    compilerConstraints: string[] = []
   ): Promise<KnowledgeIntegrationSession> {
     if (!this.hasDeepSeekApiKey()) {
       throw new Error("请在插件目录的 .env 文件中填写 DEEPSEEK_API_KEY，然后重新加载。 ");
@@ -1174,13 +1418,13 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
       throw new Error("请先输入知识体系主题。 ");
     }
 
-    const { sources, scopeLabel } = await this.collectKnowledgeIntegrationSources(scope, value);
+    const { sources, scopeLabel } = await this.collectKnowledgeIntegrationSources(scope, value, sourceFilter);
     if (!sources.length) {
       throw new Error("当前范围没有可发送给模型的已授权笔记片段。 ");
     }
     const mapSources = selectSourcesForKnowledgeMap(sources);
     const map = await this.requestGate.run(`knowledge-map:${scope}:${value.trim()}:${normalizedTopic}`, () =>
-      this.getDeepSeekClient().createKnowledgeMap(normalizedTopic, mapSources)
+      this.getDeepSeekClient().createKnowledgeMap(normalizedTopic, mapSources, compilerConstraints)
     );
     const session: KnowledgeIntegrationSession = {
       id: `knowledge-map-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1202,6 +1446,41 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
       session.sources.map((source) => source.source)
     );
     return this.previewAction(proposal);
+  }
+
+  async previewLlmWiki(goal: string): Promise<{
+    session: KnowledgeIntegrationSession;
+    preview: LlmWikiWritePreview;
+    updating: boolean;
+  }> {
+    const topic = extractLlmWikiTopic(goal);
+    const wikiFolder = `${this.settings.permissions.knowledgeSystemFolder.replace(/\\/g, "/").replace(/\/+$/u, "")}/LLM Wiki/`;
+    const compilerConstraints = this.llmWikiRegistry.errorBook
+      .filter((error) => error.status === "open")
+      .map((error) => error.rule);
+    const session = await this.createKnowledgeMap(topic, "search-results", topic, (path) => !path.startsWith(wikiFolder), compilerConstraints);
+    const compilation = compileLlmWikiTopic(session, this.llmWikiRegistry, this.settings.permissions.knowledgeSystemFolder);
+    const previews = await Promise.all(compilation.pages.map((page) => this.previewLlmWikiPage(page)));
+    return {
+      session,
+      preview: { kind: "llm-wiki", topic: session.topic, previews, nextRegistry: compilation.nextRegistry },
+      updating: previews.some((preview) => preview.existedBefore)
+    };
+  }
+
+  private async previewLlmWikiPage(page: LlmWikiPageDraft): Promise<WritePreview> {
+    const proposal = createKnowledgeSystemProposal(page.title, page.content, page.sources, page.relativePath);
+    const targetPath = `${this.settings.permissions.knowledgeSystemFolder}/${page.relativePath}`;
+    const existing = this.app.vault.getAbstractFileByPath(targetPath);
+    return existing instanceof TFile
+      ? this.previewAction({
+        type: "modifyExistingNote",
+        notePath: targetPath,
+        content: renderCreatedKnowledgeSystemNote(proposal, new Date()),
+        sources: page.sources,
+        updateMode: "replace"
+      })
+      : this.previewAction(proposal);
   }
 
   async previewKnowledgeNode(
@@ -1231,6 +1510,99 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     this.auditTrail.recordModelRequest("succeeded", `DeepSeek 知识节点草稿生成成功：${node.title}`);
     await this.savePluginData();
     return preview;
+  }
+
+  private async prepareCurrentNoteRelations(): Promise<{
+    currentPath: string;
+    plan: NoteRelationPlan;
+    preview: WritePreview | null;
+  }> {
+    if (!this.hasDeepSeekApiKey()) {
+      throw new Error("请在插件目录的 .env 文件中填写 DEEPSEEK_API_KEY，然后重新加载。 ");
+    }
+    const file = this.app.workspace.getActiveFile();
+    if (!(file instanceof TFile) || file.extension !== "md") {
+      throw new RuntimeToolBlockedError("请先打开一篇 Markdown 笔记，再补全它的关联。 ");
+    }
+    const readDecision = this.getPolicyEngine().decide({ action: "readVault", targetPath: file.path });
+    this.recordPolicyDecision(readDecision);
+    if (!readDecision.allowed) {
+      throw new RuntimeToolBlockedError(`无法读取当前笔记：${readDecision.reason}`);
+    }
+    const currentUploadDecision = this.getPolicyEngine().decide({ action: "sendToGlm", targetPath: file.path });
+    this.recordPolicyDecision(currentUploadDecision);
+    if (!currentUploadDecision.allowed) {
+      throw new RuntimeToolBlockedError(`当前笔记不能发送给模型：${currentUploadDecision.reason}`);
+    }
+
+    if (!this.markdownIndex.has(file.path)) {
+      await this.markdownIndex.refreshFile(file, this.getPolicyEngine());
+    }
+    const currentChunks = this.markdownIndex.getForPath(file.path);
+    if (!currentChunks.length) {
+      throw new RuntimeToolBlockedError("当前笔记没有可用于关联分析的索引内容；请先重建 Markdown 索引。 ");
+    }
+    const currentContent = await this.app.vault.read(file);
+    const existingLinks = new Set([...extractWikiLinkTargets(currentContent)].map((target) =>
+      this.app.metadataCache.getFirstLinkpathDest(target, file.path)?.path ?? target
+    ));
+    const currentSource: KnowledgeIntegrationSource = {
+      id: CURRENT_NOTE_SOURCE_ID,
+      source: currentChunks[0].source,
+      title: file.basename,
+      content: currentChunks.slice(0, 6).map((chunk) => chunk.content).join("\n").slice(0, 6_000)
+    };
+    const query = `${file.basename} ${currentSource.content}`.slice(0, 1_200);
+    const sources: KnowledgeIntegrationSource[] = [currentSource];
+    const selectedPaths = new Set<string>([file.path]);
+    for (const candidate of this.markdownIndex.search(query, 36)) {
+      const source = candidate.chunk.source;
+      const normalizedPath = normalizeLinkedNotePath(source.pathOrUrl);
+      if (selectedPaths.has(source.pathOrUrl) || existingLinks.has(source.pathOrUrl) || existingLinks.has(normalizedPath)) {
+        continue;
+      }
+      const decision = this.getPolicyEngine().decide({ action: "sendToGlm", targetPath: source.pathOrUrl });
+      this.recordPolicyDecision(decision);
+      if (!decision.allowed) {
+        continue;
+      }
+      selectedPaths.add(source.pathOrUrl);
+      sources.push({
+        id: `S${sources.length}`,
+        source,
+        title: candidate.chunk.heading ?? source.pathOrUrl.split("/").pop()?.replace(/\.md$/iu, "") ?? source.pathOrUrl,
+        content: candidate.chunk.content
+      });
+      if (sources.length >= 13) {
+        break;
+      }
+    }
+    if (sources.length < 2) {
+      throw new RuntimeToolBlockedError("没有找到未链接且可发送给模型的候选笔记；请先重建索引或换一篇内容更完整的笔记。 ");
+    }
+
+    try {
+      const plan = await this.requestGate.run(`note-relations:${file.path}:${file.stat.mtime}`, () =>
+        this.getDeepSeekClient().proposeNoteRelations(sources)
+      );
+      const preview = plan.relations.length
+        ? await this.previewAction({
+          type: "modifyExistingNote",
+          notePath: file.path,
+          content: renderNoteRelationItems(plan.relations, sources),
+          sources: sources
+            .filter((source) => plan.relations.some((relation) => relation.sourceIds.includes(source.id)))
+            .map((source) => source.source)
+        })
+        : null;
+      this.auditTrail.recordModelRequest("succeeded", `DeepSeek 笔记关联分析成功：${file.path}，${plan.relations.length} 条关联。`);
+      await this.savePluginData();
+      return { currentPath: file.path, plan, preview };
+    } catch (error) {
+      this.auditTrail.recordModelRequest("failed", `DeepSeek 笔记关联分析失败：${file.path}。`);
+      await this.savePluginData();
+      throw error;
+    }
   }
 
   async answerFromKnowledge(question: string): Promise<{
@@ -1265,29 +1637,62 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
       );
     }
 
+    const startedAt = Date.now();
     try {
       const memoryContext = await this.buildModelMemoryContext();
+      const modelSources = permittedSources.map((result, index) => ({
+        id: index + 1,
+        path: result.chunk.source.pathOrUrl,
+        locator: result.chunk.source.locator,
+        content: result.chunk.content
+      }));
       const response = await this.requestGate.run(`deepseek-knowledge:${question.trim()}`, () =>
         this.getDeepSeekClient().answerWithSources(
           question,
-          permittedSources.map((result, index) => ({
-            id: index + 1,
-            path: result.chunk.source.pathOrUrl,
-            locator: result.chunk.source.locator,
-            content: result.chunk.content
-          })),
+          modelSources,
           memoryContext
         )
       );
-      this.auditTrail.recordModelRequest("succeeded", `DeepSeek 来源问答成功：${response.model}`);
+      this.auditTrail.recordModelRequest(
+        "succeeded",
+        `DeepSeek 来源问答${response.evidenceComplete ? "成功" : "发现证据缺口"}：${response.model}，${response.durationMs}ms，输入 ${response.inputCharacters} 字符，来源 ${response.sourceCount ?? modelSources.length} 个；总耗时 ${Date.now() - startedAt}ms。`
+      );
+      if (!response.evidenceComplete) {
+        const missingEvidence = response.missingEvidence.length ? response.missingEvidence.join("、") : "回答所需概念";
+        await this.savePluginData();
+        throw new LocalKnowledgeUnavailableError(
+          `本地资料缺少“${missingEvidence}”的直接证据，Agent 已自动规划补证步骤。`,
+          `本地知识库检索缺少回答所需的直接证据：${missingEvidence}。不要再次安排 research:answer-vault；请改用有信息增益的补证动作，例如 research:answer-web。`,
+          true
+        );
+      }
       await this.appendActiveSessionEntry(renderSessionExchange(question, response.content));
       await this.savePluginData();
-      return { content: response.content, sources: permittedSources };
+      return {
+        content: response.content,
+        sources: permittedSources.slice(0, response.sourceCount ?? modelSources.length)
+      };
     } catch (error) {
-      this.auditTrail.recordModelRequest("failed", "DeepSeek 来源问答失败。详情请查看通知提示。");
+      if (error instanceof LocalKnowledgeUnavailableError) {
+        throw error;
+      }
+      this.auditTrail.recordModelRequest("failed", `DeepSeek 来源问答失败（${Date.now() - startedAt}ms）：${formatModelRequestError(error)}`);
       await this.savePluginData();
       throw error;
     }
+  }
+
+  private async continueEvidenceCompletion(run: AgentRun): Promise<AgentRun> {
+    const next = run.steps.find((step) => step.status === "pending");
+    if (
+      !next ||
+      next.tool !== "research" ||
+      next.action !== "answer-web" ||
+      !this.hasTavilyApiKey()
+    ) {
+      return run;
+    }
+    return this.executeAgentRunStep(run.id, next.id, true);
   }
 
   async searchWeb(query: string): Promise<WebSearchRun> {
@@ -1301,6 +1706,7 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
       throw new Error(`联网搜索被权限策略拒绝：${decision.reason}`);
     }
 
+    const startedAt = Date.now();
     try {
       const memoryContext = await this.buildModelMemoryContext();
       const response = await this.requestGate.run(`tavily-web:${query.trim()}`, async () => {
@@ -1325,9 +1731,10 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
           };
         }
       });
+      const diagnostics = `DeepSeek ${response.model}，${response.durationMs}ms，输入 ${response.inputCharacters} 字符，来源 ${response.sourceCount ?? 0} 个；总耗时 ${Date.now() - startedAt}ms。`;
       this.auditTrail.recordModelRequest("succeeded", response.mode === "web-grounded"
-        ? `Tavily 检索 + DeepSeek 联网问答成功：${response.model}${response.tavilyRequestId ? `（Tavily ${response.tavilyRequestId}）` : ""}`
-        : `Tavily 未返回可用网页结果，已降级为 DeepSeek 通用回答：${response.model}`
+        ? `Tavily 检索 + DeepSeek 联网问答成功：${response.model}${response.tavilyRequestId ? `（Tavily ${response.tavilyRequestId}）` : ""}；${diagnostics}`
+        : `Tavily 未返回可用网页结果，已降级为 DeepSeek 通用回答：${response.model}；${diagnostics}`
       );
 
       const run: WebSearchRun = {
@@ -1358,7 +1765,7 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
       await this.savePluginData();
       return run;
     } catch (error) {
-      this.auditTrail.recordModelRequest("failed", "Tavily 检索或 DeepSeek 联网问答失败。详情请查看通知提示。");
+      this.auditTrail.recordModelRequest("failed", `Tavily 检索或 DeepSeek 联网问答失败（${Date.now() - startedAt}ms）：${formatModelRequestError(error)}`);
       await this.savePluginData();
       throw error;
     }
@@ -1395,6 +1802,14 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     answer: string,
     sources: MarkdownSearchResult[]
   ): Promise<WritePreview> {
+    return this.suggestCaptureFromSources(type, answer, sources.map((source) => source.chunk.source));
+  }
+
+  private async suggestCaptureFromSources(
+    type: ManualCaptureAction,
+    answer: string,
+    sources: SourceRef[]
+  ): Promise<WritePreview> {
     if (!this.hasDeepSeekApiKey()) {
       throw new Error("请在插件目录的 .env 文件中填写 DEEPSEEK_API_KEY，然后重新加载。 ");
     }
@@ -1405,7 +1820,7 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     const stillPermitted = sources.every((source) => {
       const decision = this.getPolicyEngine().decide({
         action: "sendToGlm",
-        targetPath: source.chunk.source.pathOrUrl
+        targetPath: source.pathOrUrl
       });
       this.recordPolicyDecision(decision);
       return decision.allowed;
@@ -1422,7 +1837,7 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
         type,
         suggestion.subject,
         suggestion.content,
-        sources.map((source) => source.chunk.source)
+        sources
       );
       const preview = await this.previewAction(proposal);
       this.auditTrail.recordModelRequest("succeeded", `DeepSeek 笔记提案成功：${this.settings.deepSeekModel}`);
@@ -1438,25 +1853,57 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
   async applyWritePreview(preview: WritePreview): Promise<WriteResult> {
     try {
       const result = await this.vaultActionService.apply(preview);
+      const writeMessage = preview.proposal.type === "modifyExistingNote"
+        ? "已更新关联笔记。"
+        : result.created ? "已创建新笔记。" : "已追加到现有笔记。";
       this.auditTrail.recordVaultWrite(
         preview.proposal.type,
         result.targetPath,
         "succeeded",
-        result.created ? "已创建新笔记。" : "已追加到现有笔记。"
+        writeMessage
       );
       if (
         this.runtimeArtifacts.writePreview &&
+        !isLlmWikiWritePreview(this.runtimeArtifacts.writePreview) &&
         this.runtimeArtifacts.writePreview.targetPath === preview.targetPath &&
         this.runtimeArtifacts.writePreview.afterContent === preview.afterContent
       ) {
         this.runtimeArtifacts.writePreview = undefined;
       }
       await this.savePluginData();
-      new Notice(`${result.created ? "已创建" : "已追加"}：${result.targetPath}`);
+      new Notice(`${preview.proposal.type === "modifyExistingNote" ? "已更新" : result.created ? "已创建" : "已追加"}：${result.targetPath}`);
       return result;
     } catch (error) {
       const reason = error instanceof Error ? error.message : "未知错误。";
       this.auditTrail.recordVaultWrite(preview.proposal.type, preview.targetPath, "failed", "Vault 写入失败。");
+      await this.savePluginData();
+      throw new Error(reason);
+    }
+  }
+
+  async applyLlmWikiWritePreview(preview: LlmWikiWritePreview): Promise<WriteResult[]> {
+    const results: WriteResult[] = [];
+    try {
+      for (const pagePreview of preview.previews) {
+        const result = await this.vaultActionService.apply(pagePreview);
+        results.push(result);
+        this.auditTrail.recordVaultWrite(
+          pagePreview.proposal.type,
+          result.targetPath,
+          "succeeded",
+          pagePreview.proposal.type === "modifyExistingNote" ? "已更新 LLM Wiki 页面。" : "已创建 LLM Wiki 页面。"
+        );
+      }
+      this.llmWikiRegistry = preview.nextRegistry;
+      if (this.runtimeArtifacts.writePreview === preview) {
+        this.runtimeArtifacts.writePreview = undefined;
+      }
+      await this.savePluginData();
+      new Notice(`已写入 LLM Wiki：${results.length} 个页面。`);
+      return results;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "未知错误。";
+      this.auditTrail.recordVaultWrite("createKnowledgeSystemNote", `LLM Wiki/${preview.topic}`, "failed", "LLM Wiki 批量写入失败。请重新生成预览以同步页面。 ");
       await this.savePluginData();
       throw new Error(reason);
     }
@@ -1485,9 +1932,22 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
       attachmentRecords: this.attachmentIndex.toJSON(),
       attachmentBatchQueue: this.attachmentBatchQueue.toJSON(),
       agentRuns: this.agentRunStore.toJSON(),
-      agentSessions: this.agentSessionStore.toJSON()
+      agentSessions: this.agentSessionStore.toJSON(),
+      llmWikiRegistry: this.llmWikiRegistry
       }));
     await this.saveQueue;
+  }
+
+  private markLlmWikiSourceStale(path: string): void {
+    if (isLlmWikiPath(path, this.settings.permissions.knowledgeSystemFolder)) {
+      return;
+    }
+    const updated = markLlmWikiSourceStale(this.llmWikiRegistry, path);
+    if (updated === this.llmWikiRegistry) {
+      return;
+    }
+    this.llmWikiRegistry = updated;
+    void this.savePluginData();
   }
 
   private getPolicyEngine(): PolicyEngine {
@@ -1498,7 +1958,8 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     return new GlmClient({
       apiKey: this.glmApiKey,
       model: this.settings.glmModel,
-      timeoutMs: this.settings.requestTimeoutMs
+      slowResponseMs: this.settings.requestTimeoutMs,
+      onSlowResponse: () => this.notifySlowProviderResponse("GLM")
     });
   }
 
@@ -1514,20 +1975,27 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     return new DeepSeekClient({
       apiKey: this.deepSeekApiKey,
       model: this.settings.deepSeekModel,
-      timeoutMs: this.settings.requestTimeoutMs
+      slowResponseMs: this.settings.requestTimeoutMs,
+      onSlowResponse: () => this.notifySlowProviderResponse("DeepSeek")
     });
   }
 
   private getTavilyClient(): TavilyClient {
     return new TavilyClient({
       apiKey: this.tavilyApiKey,
-      timeoutMs: this.settings.requestTimeoutMs
+      slowResponseMs: this.settings.requestTimeoutMs,
+      onSlowResponse: () => this.notifySlowProviderResponse("Tavily")
     });
+  }
+
+  private notifySlowProviderResponse(providerName: string): void {
+    new Notice(`${providerName} 响应较慢，仍在处理中，请勿重复提交。`);
   }
 
   private async collectKnowledgeIntegrationSources(
     scope: "current-note" | "search-results" | "folder",
-    value: string
+    value: string,
+    sourceFilter?: (path: string) => boolean
   ): Promise<{ sources: KnowledgeIntegrationSource[]; scopeLabel: string }> {
     const trimmedValue = value.trim();
     let candidates: Array<{ chunk: MarkdownSearchResult["chunk"] }>;
@@ -1544,7 +2012,7 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
       if (!trimmedValue) {
         throw new Error("请输入用于选择整合资料的搜索关键词。 ");
       }
-      candidates = this.searchKnowledge(trimmedValue);
+      candidates = this.searchKnowledge(trimmedValue, KNOWLEDGE_INTEGRATION_SEARCH_LIMIT);
       scopeLabel = `搜索结果：${trimmedValue}`;
     } else {
       const folder = trimmedValue.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
@@ -1561,8 +2029,10 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
       const source = candidate.chunk.source;
       const decision = this.getPolicyEngine().decide({ action: "sendToGlm", targetPath: source.pathOrUrl });
       this.recordPolicyDecision(decision);
-      const key = `${source.pathOrUrl}:${source.locator}:${source.contentHash}`;
-      if (!decision.allowed || seen.has(key)) {
+      const key = scope === "search-results"
+        ? source.pathOrUrl
+        : `${source.pathOrUrl}:${source.locator}:${source.contentHash}`;
+      if (!decision.allowed || (sourceFilter && !sourceFilter(source.pathOrUrl)) || seen.has(key)) {
         continue;
       }
       seen.add(key);
@@ -1673,6 +2143,47 @@ function normalizeWebFallbackPolicy(value: unknown): WebFallbackPolicy {
     : DEFAULT_SETTINGS.webFallbackPolicy;
 }
 
+function formatModelRequestError(error: unknown): string {
+  const message = error instanceof Error ? error.message.trim() : "未知错误。";
+  return message.slice(0, 240) || "未知错误。";
+}
+
+function deduplicateWikiPages(
+  pages: Array<{ page: LlmWikiPageRecord; content: string }>
+): Array<{ page: LlmWikiPageRecord; content: string }> {
+  const seen = new Set<string>();
+  return pages.filter(({ page }) => {
+    if (seen.has(page.path)) {
+      return false;
+    }
+    seen.add(page.path);
+    return true;
+  });
+}
+
+function renderWikiAnswerCitations(content: string, pages: LlmWikiPageRecord[]): string {
+  return content.replace(/\[S(\d+)\]/gu, (reference, value: string) => {
+    const page = pages[Number.parseInt(value, 10) - 1];
+    return page ? `[[${page.path}|${page.title}]]` : reference;
+  });
+}
+
+function extractWikiLinkTargets(content: string): Set<string> {
+  const targets = new Set<string>();
+  for (const match of content.matchAll(/\[\[([^\]]+)\]\]/gu)) {
+    const target = match[1].split(/[|#]/u, 1)[0];
+    const normalized = normalizeLinkedNotePath(target);
+    if (normalized) {
+      targets.add(normalized);
+    }
+  }
+  return targets;
+}
+
+function normalizeLinkedNotePath(value: string): string {
+  return value.trim().replace(/\\/gu, "/").replace(/\.md$/iu, "");
+}
+
 class AttachmentBatchBlockedError extends Error {
   constructor(
     readonly kind: "paused" | "budget" | "rate-limit",
@@ -1694,7 +2205,8 @@ class RuntimeToolBlockedError extends Error {
 class LocalKnowledgeUnavailableError extends Error {
   constructor(
     message: string,
-    readonly replanFeedback: string
+    readonly replanFeedback: string,
+    readonly autoContinue = false
   ) {
     super(message);
     this.name = "LocalKnowledgeUnavailableError";

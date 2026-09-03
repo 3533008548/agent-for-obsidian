@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { hashText } from "../src/domain/content-hash";
 import {
+  buildKnowledgeMapMessages,
   parseKnowledgeMap,
   parseKnowledgeNodeDraft,
   renderKnowledgeMapContent,
@@ -36,6 +37,12 @@ const sources: KnowledgeIntegrationSource[] = [
 ];
 
 describe("knowledge system JSON validation", () => {
+  it("injects open Error Book rules into the next compilation prompt", () => {
+    const messages = buildKnowledgeMapMessages("监督学习", sources, ["生成链接前必须确认目标页面存在。"]);
+    expect(messages[0].content).toContain("已有 Wiki 修复规则");
+    expect(messages[0].content).toContain("生成链接前必须确认目标页面存在。");
+  });
+
   it("accepts a map only when each node references known sources", () => {
     const map = parseKnowledgeMap(JSON.stringify({
       overview: "监督学习由目标、损失和优化组成。",
@@ -71,6 +78,30 @@ describe("knowledge system JSON validation", () => {
       gaps: []
     });
     expect(() => parseKnowledgeNodeDraft(invalidDraft, new Set(["S1"]))).toThrow("未知或重复");
+  });
+
+  it("keeps the first twelve display-only conflicts instead of rejecting an otherwise valid map", () => {
+    const map = parseKnowledgeMap(JSON.stringify({
+      overview: "概览",
+      nodes: [{ id: "state", title: "状态", summary: "说明", sourceIds: ["S1"], priority: "high" }],
+      conflicts: Array.from({ length: 13 }, (_, index) => `冲突 ${index + 1}`),
+      gaps: []
+    }), new Set(["S1"]));
+
+    expect(map.conflicts).toHaveLength(12);
+    expect(map.conflicts.at(-1)).toBe("冲突 12");
+  });
+
+  it("normalizes malformed display-only conflict and gap fields without rejecting source-grounded nodes", () => {
+    const map = parseKnowledgeMap(JSON.stringify({
+      overview: "概览",
+      nodes: [{ id: "state", title: "状态", summary: "说明", sourceIds: ["S1"], priority: "high" }],
+      conflicts: "同一术语在两篇笔记中含义不同。",
+      gaps: { unsupported: true }
+    }), new Set(["S1"]));
+
+    expect(map.conflicts).toEqual(["同一术语在两篇笔记中含义不同。"]);
+    expect(map.gaps).toEqual([]);
   });
 
   it("renders node content with visible conflicts and gaps", () => {

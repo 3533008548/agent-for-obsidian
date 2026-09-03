@@ -51,7 +51,7 @@ export class AuditTrail {
     action: Extract<
       PolicyAction,
       "createInboxNote" | "createKnowledgeSystemNote" | "appendDailyNote" |
-      "createAgentSession" | "appendAgentSession" | "updateAgentProfile"
+      "createAgentSession" | "appendAgentSession" | "updateAgentProfile" | "modifyExistingNote"
     >,
     targetPath: string,
     outcome: "succeeded" | "failed",

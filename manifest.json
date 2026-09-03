@@ -1,7 +1,7 @@
 {
   "id": "knowledge-loop-agent",
   "name": "Knowledge Loop Agent",
-  "version": "0.16.0",
+  "version": "0.25.0",
   "minAppVersion": "1.5.0",
   "description": "A permissioned, source-aware personal knowledge agent.",
   "author": "",

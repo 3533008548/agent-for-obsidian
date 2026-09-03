@@ -21,6 +21,8 @@ export interface CreateKnowledgeSystemNoteProposal {
   title: string;
   content: string;
   sources: SourceRef[];
+  /** Optional path below the configured knowledge-system folder. */
+  relativePath?: string;
 }
 
 export interface CreateAgentSessionProposal {
@@ -44,13 +46,23 @@ export interface UpdateAgentProfileProposal {
   sources: SourceRef[];
 }
 
+export interface ModifyExistingNoteProposal {
+  type: "modifyExistingNote";
+  notePath: string;
+  content: string;
+  sources: SourceRef[];
+  /** Relation proposals merge their managed block; compiled Wiki pages replace their generated body. */
+  updateMode?: "merge-relations" | "replace";
+}
+
 export type AgentActionProposal =
   | CreateInboxNoteProposal
   | AppendDailyNoteProposal
   | CreateKnowledgeSystemNoteProposal
   | CreateAgentSessionProposal
   | AppendAgentSessionProposal
-  | UpdateAgentProfileProposal;
+  | UpdateAgentProfileProposal
+  | ModifyExistingNoteProposal;
 export type ManualCaptureAction = "createInboxNote" | "appendDailyNote";
 
 export function createManualCaptureSource(content: string): SourceRef {
@@ -92,31 +104,46 @@ export function createSourcedCaptureProposal(
 export function createKnowledgeSystemProposal(
   title: string,
   content: string,
-  sources: SourceRef[]
+  sources: SourceRef[],
+  relativePath?: string
 ): CreateKnowledgeSystemNoteProposal {
   return {
     type: "createKnowledgeSystemNote",
     title,
     content,
-    sources: deduplicateSources(sources)
+    sources: deduplicateSources(sources),
+    ...(relativePath ? { relativePath } : {})
   };
 }
 
 export function validateActionProposal(proposal: AgentActionProposal): string[] {
   const errors: string[] = [];
-  const subject = proposal.type === "appendDailyNote"
-    ? proposal.topic
-    : proposal.type === "createInboxNote" || proposal.type === "createKnowledgeSystemNote" || proposal.type === "createAgentSession"
-      ? proposal.title
-      : "agent-memory";
-  if (!sanitizeFileStem(subject)) {
-    errors.push("标题或主题不能为空，且必须包含至少一个有效文件名字符。");
+  if (proposal.type === "modifyExistingNote") {
+    if (!normalizeVaultPath(proposal.notePath)) {
+      errors.push("既有笔记目标不是有效的 Vault 相对路径。");
+    }
+  } else {
+    const subject = proposal.type === "appendDailyNote"
+      ? proposal.topic
+      : proposal.type === "createInboxNote" || proposal.type === "createKnowledgeSystemNote" || proposal.type === "createAgentSession"
+        ? proposal.title
+        : "agent-memory";
+    if (!sanitizeFileStem(subject)) {
+      errors.push("标题或主题不能为空，且必须包含至少一个有效文件名字符。");
+    }
   }
   if (
     (proposal.type === "createAgentSession" || proposal.type === "appendAgentSession") &&
     !normalizeVaultPath(proposal.sessionPath)
   ) {
     errors.push("会话目标不是有效的 Vault 相对路径。");
+  }
+  if (
+    proposal.type === "createKnowledgeSystemNote" &&
+    proposal.relativePath &&
+    (!normalizeVaultPath(proposal.relativePath) || !proposal.relativePath.endsWith(".md"))
+  ) {
+    errors.push("知识体系相对路径必须是有效的 Markdown Vault 路径。");
   }
   if (!proposal.content.trim()) {
     errors.push("写入内容不能为空。");
@@ -148,12 +175,14 @@ export function buildActionTargetPath(
   knowledgeSystemFolder = "知识体系/Agent",
   agentMemoryFolder = inboxFolder
 ): string {
-  if (proposal.type === "createAgentSession" || proposal.type === "appendAgentSession") {
-    const sessionPath = normalizeVaultPath(proposal.sessionPath);
-    if (!sessionPath) {
-      throw new Error("会话目标不是有效的 Vault 相对路径。 ");
+  if (proposal.type === "createAgentSession" || proposal.type === "appendAgentSession" || proposal.type === "modifyExistingNote") {
+    const explicitPath = normalizeVaultPath(
+      proposal.type === "modifyExistingNote" ? proposal.notePath : proposal.sessionPath
+    );
+    if (!explicitPath) {
+      throw new Error(proposal.type === "modifyExistingNote" ? "既有笔记目标不是有效的 Vault 相对路径。 " : "会话目标不是有效的 Vault 相对路径。 ");
     }
-    return sessionPath;
+    return explicitPath;
   }
   const folder = normalizeVaultPath(
     proposal.type === "createInboxNote"
@@ -166,6 +195,14 @@ export function buildActionTargetPath(
   );
   if (!folder) {
     throw new Error("配置的目标目录不是有效的 Vault 相对路径。");
+  }
+
+  if (proposal.type === "createKnowledgeSystemNote" && proposal.relativePath) {
+    const relativePath = normalizeVaultPath(proposal.relativePath);
+    if (!relativePath || !relativePath.endsWith(".md")) {
+      throw new Error("知识体系相对路径不是有效的 Markdown Vault 路径。");
+    }
+    return `${folder}/${relativePath}`;
   }
 
   const stem = proposal.type === "updateAgentProfile"

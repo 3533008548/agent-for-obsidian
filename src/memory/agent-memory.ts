@@ -6,6 +6,14 @@ const MAX_PROFILE_CONTEXT_CHARACTERS = 2_400;
 const MAX_SESSION_CONTEXT_CHARACTERS = 3_600;
 const PROFILE_MARKER_START = "<!-- knowledge-loop-agent-memory:start -->";
 const PROFILE_MARKER_END = "<!-- knowledge-loop-agent-memory:end -->";
+const SESSION_ENTRY_START = "<!-- knowledge-loop-agent:session-entry:start -->";
+const SESSION_ENTRY_END = "<!-- knowledge-loop-agent:session-entry:end -->";
+const SESSION_USER_START = "<!-- knowledge-loop-agent:session-user:start -->";
+const SESSION_USER_END = "<!-- knowledge-loop-agent:session-user:end -->";
+const SESSION_AGENT_START = "<!-- knowledge-loop-agent:session-agent:start -->";
+const SESSION_AGENT_END = "<!-- knowledge-loop-agent:session-agent:end -->";
+const SESSION_TOOL_START = "<!-- knowledge-loop-agent:session-tool:start -->";
+const SESSION_TOOL_END = "<!-- knowledge-loop-agent:session-tool:end -->";
 
 export type AgentSessionStatus = "active" | "closed";
 export type ProfileMemoryCategory = "goal" | "preference" | "constraint" | "fact";
@@ -174,29 +182,74 @@ export function renderNewAgentSession(session: AgentSession): string {
 
 export function renderSessionExchange(userContent: string, assistantContent: string, now = new Date()): string {
   return [
+    SESSION_ENTRY_START,
     `## ${formatTimestamp(now)}`,
     "",
-    "### 用户",
+    SESSION_USER_START,
     userContent.trim(),
-    "",
-    "### Agent",
+    SESSION_USER_END,
+    SESSION_AGENT_START,
     assistantContent.trim(),
+    SESSION_AGENT_END,
+    SESSION_ENTRY_END,
     ""
   ].join("\n");
 }
 
 export function renderSessionToolResult(toolName: string, summary: string, now = new Date()): string {
   return [
+    SESSION_ENTRY_START,
     `## 工具执行 · ${formatTimestamp(now)}`,
     "",
+    SESSION_TOOL_START,
     `- ${toolName}：${summary.trim()}`,
+    SESSION_TOOL_END,
+    SESSION_ENTRY_END,
     ""
   ].join("\n");
 }
 
 export function parseAgentSessionTranscript(markdown: string): AgentSessionMessage[] {
   const messages: AgentSessionMessage[] = [];
-  for (const section of markdown.split(/^##\s+/mu).slice(1)) {
+  let cursor = 0;
+  while (true) {
+    const entryStart = markdown.indexOf(SESSION_ENTRY_START, cursor);
+    if (entryStart < 0) {
+      break;
+    }
+    parseLegacySessionTranscript(markdown.slice(cursor, entryStart), messages);
+    const contentStart = entryStart + SESSION_ENTRY_START.length;
+    const entryEnd = markdown.indexOf(SESSION_ENTRY_END, contentStart);
+    if (entryEnd < 0) {
+      parseLegacySessionTranscript(markdown.slice(entryStart), messages);
+      return messages;
+    }
+    parseMarkedSessionEntry(markdown.slice(contentStart, entryEnd), messages);
+    cursor = entryEnd + SESSION_ENTRY_END.length;
+  }
+  parseLegacySessionTranscript(markdown.slice(cursor), messages);
+  return messages;
+}
+
+function parseMarkedSessionEntry(entry: string, messages: AgentSessionMessage[]): void {
+  const label = entry.match(/^##\s+(.+)$/mu)?.[1]?.trim() ?? "";
+  const userContent = readMarkedSessionSection(entry, SESSION_USER_START, SESSION_USER_END);
+  const agentContent = readMarkedSessionSection(entry, SESSION_AGENT_START, SESSION_AGENT_END);
+  const toolContent = readMarkedSessionSection(entry, SESSION_TOOL_START, SESSION_TOOL_END);
+  if (userContent !== null && agentContent !== null) {
+    if (userContent) {
+      messages.push({ role: "user", label, content: userContent });
+    }
+    if (agentContent) {
+      messages.push({ role: "agent", label, content: agentContent });
+    }
+  } else if (toolContent !== null && toolContent) {
+    messages.push({ role: "tool", label, content: toolContent });
+  }
+}
+
+function parseLegacySessionTranscript(markdown: string, messages: AgentSessionMessage[]): void {
+  for (const section of markdown.split(/^##\s+(?=(?:\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}|工具执行\s*·))/mu).slice(1)) {
     const [label = "", ...bodyLines] = section.split("\n");
     const body = bodyLines.join("\n").trim();
     const userMarker = "### 用户";
@@ -216,7 +269,18 @@ export function parseAgentSessionTranscript(markdown: string): AgentSessionMessa
       messages.push({ role: "tool", label: label.trim(), content: body });
     }
   }
-  return messages;
+}
+
+function readMarkedSessionSection(content: string, startMarker: string, endMarker: string): string | null {
+  const start = content.indexOf(startMarker);
+  if (start < 0) {
+    return null;
+  }
+  const end = content.indexOf(endMarker, start + startMarker.length);
+  if (end < 0) {
+    return null;
+  }
+  return content.slice(start + startMarker.length, end).trim();
 }
 
 export function buildAgentProfileSkeleton(now = new Date()): string {

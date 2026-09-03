@@ -22,7 +22,8 @@ interface TavilySearchResponse {
 
 export interface TavilyClientOptions {
   apiKey: string;
-  timeoutMs: number;
+  slowResponseMs: number;
+  onSlowResponse?: () => void;
 }
 
 export interface TavilySearchResult {
@@ -51,8 +52,9 @@ export class TavilyClient {
     const body = await postJson<TavilySearchResponse>({
       url: TAVILY_SEARCH_URL,
       apiKey: this.options.apiKey,
-      timeoutMs: this.options.timeoutMs,
+      slowResponseMs: this.options.slowResponseMs,
       providerName: "Tavily",
+      onSlowResponse: this.options.onSlowResponse,
       payload: {
         query: normalizedQuery,
         topic: "general",

@@ -26,7 +26,7 @@ export interface KnowledgeLoopSettings {
 export const DEFAULT_SETTINGS: KnowledgeLoopSettings = {
   deepSeekModel: "deepseek-v4-flash",
   glmModel: "glm-4.6v-flash",
-  requestTimeoutMs: 30_000,
+  requestTimeoutMs: 60_000,
   attachmentDailyRequestLimit: 30,
   attachmentDailyInputMbLimit: 100,
   attachmentRequestIntervalMs: 5_000,
@@ -83,8 +83,8 @@ export class KnowledgeLoopSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("请求超时（毫秒）")
-      .setDesc("DeepSeek、GLM 与 Tavily 的单次请求上限；默认 30000。")
+      .setName("慢响应提示（毫秒）")
+      .setDesc("DeepSeek、GLM 与 Tavily 超过此时间会提示仍在处理中，但不会中断真实请求；默认 60000。")
       .addText((text) =>
         text
           .setValue(String(this.plugin.settings.requestTimeoutMs))

@@ -14,6 +14,8 @@ export interface AgentToolExecutionResult {
   replanFeedback?: string;
   /** Tool calls that an automatically generated replacement plan must not repeat. */
   replanExclusions?: AgentToolCall[];
+  /** Continue with the replacement plan when the user's approved goal requires evidence completion. */
+  autoContinue?: boolean;
 }
 
 export interface AgentToolHandler {

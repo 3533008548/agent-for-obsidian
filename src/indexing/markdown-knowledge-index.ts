@@ -38,10 +38,7 @@ export class MarkdownKnowledgeIndex {
     };
   }
 
-  async refreshFile(file: TFile, policy: PolicyEngine, force = false): Promise<boolean> {
-    if (!force && !this.chunksByPath.has(file.path)) {
-      return false;
-    }
+  async refreshFile(file: TFile, policy: PolicyEngine): Promise<boolean> {
     return this.indexFile(file, policy);
   }
 
@@ -80,6 +77,10 @@ export class MarkdownKnowledgeIndex {
   }
 
   private async indexFile(file: TFile, policy: PolicyEngine): Promise<boolean> {
+    if (file.extension.toLocaleLowerCase() !== "md") {
+      this.chunksByPath.delete(file.path);
+      return false;
+    }
     if (this.isExcludedPath(file.path)) {
       this.chunksByPath.delete(file.path);
       return false;

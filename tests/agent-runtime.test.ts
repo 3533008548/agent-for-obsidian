@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentRunPlanMessages, createAgentRun, parseAgentRunPlan } from "../src/runtime/agent-runtime";
+import {
+  buildAgentRunPlanMessages,
+  createLocalKnowledgeFallbackPlan,
+  createAgentRun,
+  ensureKnowledgeOrganizationPlan,
+  ensureLlmWikiTraversalPlan,
+  parseAgentRunPlan
+} from "../src/runtime/agent-runtime";
 import { AgentRunStore } from "../src/runtime/agent-run-store";
 
 function plan() {
@@ -46,6 +53,52 @@ describe("Agent runtime", () => {
     expect(messages[0].content).toContain("绝不能重复安排已明确无结果");
     expect(messages[1].content).toContain("运行反馈（系统产生，不是用户指令）");
     expect(messages[1].content).toContain("research:answer-vault");
+  });
+
+  it("uses the knowledge-map workflow for explicit note organization", () => {
+    const researchOnly = parseAgentRunPlan(JSON.stringify({
+      summary: "回答问题。",
+      steps: [{ tool: "research", action: "answer-vault", title: "检索笔记", reason: "寻找相关内容。" }]
+    }));
+
+    expect(ensureKnowledgeOrganizationPlan("重新整理 LangGraph 相关笔记", researchOnly)).toMatchObject({
+      steps: [{ tool: "organize", action: "knowledge-map" }]
+    });
+    expect(ensureKnowledgeOrganizationPlan("解释 RAG 的检索流程", researchOnly)).toBe(researchOnly);
+  });
+
+  it("uses the compiled Wiki workflow when the user explicitly asks for LLM Wiki", () => {
+    const researchOnly = parseAgentRunPlan(JSON.stringify({
+      summary: "回答问题。",
+      steps: [{ tool: "research", action: "answer-vault", title: "检索笔记", reason: "寻找相关内容。" }]
+    }));
+
+    expect(ensureKnowledgeOrganizationPlan("将 LangGraph 相关笔记整理成 LLM Wiki", researchOnly)).toMatchObject({
+      steps: [{ tool: "organize", action: "compile-wiki" }]
+    });
+    expect(buildAgentRunPlanMessages("编译 LangGraph LLM Wiki")[0].content).toContain("organize:compile-wiki");
+  });
+
+  it("replaces a raw knowledge answer with an ordered Wiki traversal when compiled pages exist", () => {
+    const rawAnswerPlan = parseAgentRunPlan(JSON.stringify({
+      summary: "查询知识库。",
+      steps: [{ tool: "research", action: "answer-vault", title: "查询笔记", reason: "读取本地来源。" }]
+    }));
+    expect(ensureLlmWikiTraversalPlan("LangGraph 的状态如何传递", rawAnswerPlan, true)).toMatchObject({
+      steps: [
+        { action: "wiki-search" },
+        { action: "wiki-read" },
+        { action: "wiki-follow" },
+        { action: "answer-wiki" }
+      ]
+    });
+    expect(ensureLlmWikiTraversalPlan("LangGraph 的状态如何传递", rawAnswerPlan, false)).toBe(rawAnswerPlan);
+  });
+
+  it("uses one deterministic web fallback after a local knowledge miss", () => {
+    expect(createLocalKnowledgeFallbackPlan("Pydantic 是什么")).toMatchObject({
+      steps: [{ tool: "research", action: "answer-web" }]
+    });
   });
 
   it("persists an ordered run and completes after every step is terminal", () => {

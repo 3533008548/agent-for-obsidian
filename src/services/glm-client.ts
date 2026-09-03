@@ -27,7 +27,8 @@ interface GlmMessage {
 export interface GlmClientOptions {
   apiKey: string;
   model: string;
-  timeoutMs: number;
+  slowResponseMs: number;
+  onSlowResponse?: () => void;
 }
 
 export interface GlmConnectionResult {
@@ -114,8 +115,9 @@ export class GlmClient {
     return postJson<T>({
       url,
       apiKey: this.options.apiKey,
-      timeoutMs: this.options.timeoutMs,
+      slowResponseMs: this.options.slowResponseMs,
       providerName: "GLM",
+      onSlowResponse: this.options.onSlowResponse,
       payload
     });
   }

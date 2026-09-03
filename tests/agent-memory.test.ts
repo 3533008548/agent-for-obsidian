@@ -32,8 +32,9 @@ describe("Agent memory", () => {
     const markdown = `${renderNewAgentSession(session)}\n${renderSessionExchange("问题", "回答", new Date("2026-08-17T09:01:00.000Z"))}`;
     expect(markdown).toContain("agent-memory: session");
     expect(markdown).toContain("index: false");
-    expect(markdown).toContain("### 用户\n问题");
-    expect(markdown).toContain("### Agent\n回答");
+    expect(markdown).toContain("session-user:start");
+    expect(markdown).toContain("问题");
+    expect(markdown).toContain("回答");
   });
 
   it("uses a bounded recent session window and a bounded profile window", () => {
@@ -59,6 +60,53 @@ describe("Agent memory", () => {
       { role: "agent", content: "回答" },
       { role: "tool", content: "- 重建索引：已索引 12 个文件。" }
     ]);
+  });
+
+  it("keeps complete agent answers that contain Markdown headings", () => {
+    const answer = "# LangGraph 笔记汇总\n\n## 状态流转\n\n状态由图负责传递。\n\n## Checkpoint\n\n用于恢复执行。";
+    const transcript = renderSessionExchange("整理 LangGraph 笔记", answer, new Date("2026-08-17T09:01:00.000Z"));
+
+    expect(parseAgentSessionTranscript(transcript)).toEqual([
+      { role: "user", label: "2026-08-17 17:01", content: "整理 LangGraph 笔记" },
+      { role: "agent", label: "2026-08-17 17:01", content: answer }
+    ]);
+  });
+
+  it("continues to parse legacy session records", () => {
+    const legacy = [
+      "## 2026-08-17 09:01",
+      "",
+      "### 用户",
+      "旧问题",
+      "",
+      "### Agent",
+      "旧回答"
+    ].join("\n");
+
+    expect(parseAgentSessionTranscript(legacy).map(({ role, content }) => ({ role, content }))).toEqual([
+      { role: "user", content: "旧问题" },
+      { role: "agent", content: "旧回答" }
+    ]);
+  });
+
+  it("keeps Markdown headings in legacy agent answers", () => {
+    const legacy = [
+      "## 2026-08-17 09:01",
+      "",
+      "### 用户",
+      "整理 LangGraph 笔记",
+      "",
+      "### Agent",
+      "# 汇总",
+      "",
+      "## 状态流转",
+      "内容完整保留。",
+      "",
+      "## Checkpoint",
+      "也应完整保留。"
+    ].join("\n");
+
+    expect(parseAgentSessionTranscript(legacy)[1]?.content).toContain("## Checkpoint");
   });
 
   it("only accepts a compact allowlisted profile suggestion and preserves user-authored content", () => {

@@ -128,4 +128,63 @@ describe("VaultActionService", () => {
 
     await expect(service.apply(secondPreview)).rejects.toThrow("预览后已被修改");
   });
+
+  it("updates only the managed relation block in an existing note", async () => {
+    const vault = new MemoryVault();
+    vault.files.set("RAG/总览.md", "# RAG\n\n正文\n\n## 关联笔记\n\n- 手写关联：[[手写笔记]]");
+    const service = createService(vault);
+    const source = createManualCaptureSource("关联提案");
+
+    const firstPreview = await service.preview({
+      type: "modifyExistingNote",
+      notePath: "RAG/总览.md",
+      content: "- 前置概念：[[RAG/向量检索.md]] — 负责召回。",
+      sources: [source]
+    });
+    expect(firstPreview.existedBefore).toBe(true);
+    await service.apply(firstPreview);
+
+    const secondPreview = await service.preview({
+      type: "modifyExistingNote",
+      notePath: "RAG/总览.md",
+      content: "- 对比阅读：[[RAG/关键词检索.md]] — 依赖词面匹配。",
+      sources: [source]
+    });
+    await service.apply(secondPreview);
+
+    const content = vault.files.get("RAG/总览.md") ?? "";
+    expect(content).toContain("- 手写关联：[[手写笔记]]");
+    expect(content).toContain("[[RAG/关键词检索.md]]");
+    expect(content).not.toContain("[[RAG/向量检索.md]]");
+  });
+
+  it("never creates a missing note for a relation update", async () => {
+    const vault = new MemoryVault();
+    const service = createService(vault);
+    await expect(service.preview({
+      type: "modifyExistingNote",
+      notePath: "RAG/不存在.md",
+      content: "- 前置概念：[[RAG/向量检索.md]]",
+      sources: [createManualCaptureSource("关联提案")]
+    })).rejects.toThrow("只能修改已存在");
+    expect(vault.files.size).toBe(0);
+  });
+
+  it("replaces a compiled Wiki page only after its preview is applied", async () => {
+    const vault = new MemoryVault();
+    vault.files.set("知识体系/Agent/LLM Wiki/LangGraph/概览.md", "旧的生成内容");
+    const service = createService(vault);
+    const preview = await service.preview({
+      type: "modifyExistingNote",
+      notePath: "知识体系/Agent/LLM Wiki/LangGraph/概览.md",
+      content: "# LangGraph LLM Wiki\n\n新的生成内容",
+      sources: [createManualCaptureSource("新的生成内容")],
+      updateMode: "replace"
+    });
+
+    expect(vault.files.get(preview.targetPath)).toBe("旧的生成内容");
+    expect(preview.afterContent).toBe("# LangGraph LLM Wiki\n\n新的生成内容\n");
+    await service.apply(preview);
+    expect(vault.files.get(preview.targetPath)).toBe("# LangGraph LLM Wiki\n\n新的生成内容\n");
+  });
 });
