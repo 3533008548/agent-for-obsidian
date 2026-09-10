@@ -1,13 +1,7 @@
 import { requestUrl } from "obsidian";
+import type { JsonPostRequest } from "./json-post";
 
-export interface JsonPostRequest {
-  url: string;
-  apiKey: string;
-  payload: Record<string, unknown>;
-  slowResponseMs?: number;
-  providerName: string;
-  onSlowResponse?: () => void;
-}
+export type { JsonPost, JsonPostRequest } from "./json-post";
 
 /**
  * Shared, non-streaming JSON request path for external providers.

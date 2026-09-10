@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "types": ["node"]
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "../src/core/**/*.ts",
+    "../src/domain/**/*.ts",
+    "../src/indexing/markdown-parser.ts",
+    "../src/indexing/markdown-search.ts",
+    "../src/indexing/portable-markdown-knowledge-index.ts",
+    "../src/policy/policy-engine.ts",
+    "../src/desktop/**/*.ts",
+    "../src/services/**/*.ts",
+    "../src/integration/**/*.ts",
+    "../src/gardener/**/*.ts",
+    "../src/memory/**/*.ts",
+    "../src/paste/**/*.ts",
+    "../src/runtime/**/*.ts"
+  ]
+}

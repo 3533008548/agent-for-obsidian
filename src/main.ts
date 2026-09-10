@@ -23,6 +23,7 @@ import {
 import { DeepSeekClient } from "./services/deepseek-client";
 import { GlmClient } from "./services/glm-client";
 import { NoUsableWebResultsError, TavilyClient } from "./services/tavily-client";
+import { postJson } from "./services/api-request";
 import { InFlightRequestGate } from "./services/in-flight-request-gate";
 import {
   getNoWebResultMessage,
@@ -700,25 +701,35 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
           this.runtimeArtifacts.answer = { kind: "vault", query: goal, content: answer.content, sources: answer.sources };
           return { summary: `已生成带 ${answer.sources.length} 条本地来源的回答。`, artifact: "answer" };
         } catch (error) {
-          if (error instanceof LocalKnowledgeUnavailableError) {
-            return {
-              summary: error.message,
-              replanFeedback: error.replanFeedback,
-              replanExclusions: [{ tool: "research", action: "answer-vault" }],
-              autoContinue: error.autoContinue
-            };
+          const recovery = this.toEvidenceRecoveryResult(error, { tool: "research", action: "answer-vault" });
+          if (recovery) {
+            return recovery;
           }
           throw error;
         }
       },
       "research:wiki-search": async ({ goal }) => {
         const candidates = this.searchLlmWikiPages(goal);
+        if (!candidates.length) {
+          return this.createEvidenceRecoveryResult(
+            "当前 LLM Wiki 没有命中页面，Agent 已自动规划补证步骤。",
+            "LLM Wiki 检索为 0 条结果。不要再次安排 research:wiki-search；请改用有信息增益的补证动作，例如 research:answer-web。",
+            { tool: "research", action: "wiki-search" }
+          );
+        }
         this.runtimeArtifacts.wikiTraversal = { query: goal, candidates, pages: [] };
         return { summary: `LLM Wiki 搜索命中 ${candidates.length} 个页面：${candidates.map((page) => page.title).join("、")}。` };
       },
       "research:wiki-read": async () => {
         const traversal = this.requireWikiTraversal();
         const pages = await this.readLlmWikiPages(traversal.candidates.slice(0, 2));
+        if (!pages.length) {
+          return this.createEvidenceRecoveryResult(
+            "命中的 LLM Wiki 页面已不可读取，Agent 已自动规划补证步骤。",
+            "LLM Wiki 页面不可读取或已删除。不要再次安排 research:wiki-read；请改用有信息增益的补证动作，例如 research:answer-web。",
+            { tool: "research", action: "wiki-read" }
+          );
+        }
         traversal.pages = pages;
         return { summary: `已阅读 ${pages.length} 个 Wiki 页面：${pages.map(({ page }) => page.title).join("、")}。` };
       },
@@ -732,15 +743,23 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
           : "已读页面没有可继续跟随的 Wiki 链接；将使用当前证据回答。" };
       },
       "research:answer-wiki": async ({ goal }) => {
-        const answer = await this.answerFromLlmWiki(goal);
-        this.runtimeArtifacts.answer = {
-          kind: "wiki",
-          query: goal,
-          content: answer.content,
-          sources: answer.sources,
-          traversedPaths: answer.traversedPaths
-        };
-        return { summary: `已基于 ${answer.traversedPaths.length} 个 Wiki 页面生成回答。`, artifact: "answer" };
+        try {
+          const answer = await this.answerFromLlmWiki(goal);
+          this.runtimeArtifacts.answer = {
+            kind: "wiki",
+            query: goal,
+            content: answer.content,
+            sources: answer.sources,
+            traversedPaths: answer.traversedPaths
+          };
+          return { summary: `已基于 ${answer.traversedPaths.length} 个 Wiki 页面生成回答。`, artifact: "answer" };
+        } catch (error) {
+          const recovery = this.toEvidenceRecoveryResult(error, { tool: "research", action: "answer-wiki" });
+          if (recovery) {
+            return recovery;
+          }
+          throw error;
+        }
       },
       "research:answer-web": async ({ goal }) => {
         const answer = await this.searchWeb(goal);
@@ -833,11 +852,7 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
   }
 
   private searchLlmWikiPages(query: string): LlmWikiPageRecord[] {
-    const candidates = searchLlmWiki(this.llmWikiRegistry, query).map((result) => result.page);
-    if (!candidates.length) {
-      throw new RuntimeToolBlockedError("当前 LLM Wiki 没有命中页面；请先编译相关主题，或改用原始资料检索。 ");
-    }
-    return candidates;
+    return searchLlmWiki(this.llmWikiRegistry, query).map((result) => result.page);
   }
 
   private hasRelevantLlmWiki(query: string): boolean {
@@ -857,10 +872,28 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
         pages.push({ page, content: await this.app.vault.read(file) });
       }
     }
-    if (!pages.length) {
-      throw new RuntimeToolBlockedError("已命中的 LLM Wiki 页面不可读取或已被删除；请重新编译该主题。 ");
-    }
     return pages;
+  }
+
+  private toEvidenceRecoveryResult(error: unknown, excludedCall: AgentToolCall): AgentToolExecutionResult | null {
+    if (!(error instanceof LocalKnowledgeUnavailableError)) {
+      return null;
+    }
+    return this.createEvidenceRecoveryResult(error.message, error.replanFeedback, excludedCall, error.autoContinue);
+  }
+
+  private createEvidenceRecoveryResult(
+    summary: string,
+    replanFeedback: string,
+    excludedCall: AgentToolCall,
+    autoContinue = true
+  ): AgentToolExecutionResult {
+    return {
+      summary,
+      replanFeedback,
+      replanExclusions: [excludedCall],
+      autoContinue
+    };
   }
 
   private async answerFromLlmWiki(question: string): Promise<{
@@ -873,7 +906,10 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     }
     const traversal = this.requireWikiTraversal();
     if (!traversal.pages.length) {
-      throw new RuntimeToolBlockedError("本次 Wiki 遍历尚未读取页面，不能据此回答。 ");
+      throw new LocalKnowledgeUnavailableError(
+        "本次 Wiki 遍历没有可读页面，Agent 已自动规划补证步骤。",
+        "LLM Wiki 遍历没有可读页面。不要再次安排 research:answer-wiki；请改用有信息增益的补证动作，例如 research:answer-web。"
+      );
     }
     const permitted = traversal.pages.filter(({ page }) => {
       const decision = this.getPolicyEngine().decide({ action: "sendToGlm", targetPath: page.path });
@@ -881,7 +917,10 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
       return decision.allowed;
     });
     if (!permitted.length) {
-      throw new RuntimeToolBlockedError("已读 Wiki 页面没有获准发送给模型，无法生成回答。 ");
+      throw new LocalKnowledgeUnavailableError(
+        "已读 Wiki 页面没有获准外发给模型，Agent 已自动规划补证步骤。",
+        "LLM Wiki 页面没有任何来源获准外发给模型。不要再次安排 research:answer-wiki；请改用不依赖这些页面的补证动作，例如 research:answer-web。"
+      );
     }
     const modelSources = permitted.map(({ page, content }, index) => ({
       id: index + 1,
@@ -899,6 +938,14 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
         "succeeded",
         `DeepSeek LLM Wiki 问答${response.evidenceComplete ? "成功" : "存在证据缺口"}：${response.model}，${response.durationMs}ms，页面 ${modelSources.length} 个；总耗时 ${Date.now() - startedAt}ms。`
       );
+      if (!response.evidenceComplete) {
+        const missingEvidence = response.missingEvidence.length ? response.missingEvidence.join("、") : "回答所需概念";
+        await this.savePluginData();
+        throw new LocalKnowledgeUnavailableError(
+          `LLM Wiki 缺少“${missingEvidence}”的直接证据，Agent 已自动规划补证步骤。`,
+          `LLM Wiki 已阅页面缺少回答所需的直接证据：${missingEvidence}。不要再次安排 research:answer-wiki；请改用有信息增益的补证动作，例如 research:answer-web。`
+        );
+      }
       await this.appendActiveSessionEntry(renderSessionExchange(question, content));
       await this.savePluginData();
       return {
@@ -913,6 +960,9 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
         traversedPaths: permitted.map(({ page }) => page.path)
       };
     } catch (error) {
+      if (error instanceof LocalKnowledgeUnavailableError) {
+        throw error;
+      }
       this.auditTrail.recordModelRequest("failed", `DeepSeek LLM Wiki 问答失败（${Date.now() - startedAt}ms）：${formatModelRequestError(error)}`);
       await this.savePluginData();
       throw error;
@@ -1168,15 +1218,13 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     if (run.replanCount >= 1) {
       throw new Error("每次 Agent 运行最多重新规划一次；请新建运行继续。 ");
     }
-    const shouldUseWebFallback = this.hasTavilyApiKey() &&
-      excludedCalls.some((call) => call.tool === "research" && call.action === "answer-vault") &&
-      replanFeedback.includes("本地知识库检索");
+    const shouldUseWebFallback = this.hasTavilyApiKey() && excludedCalls.some(isEvidenceCollectionCall);
     const plan = shouldUseWebFallback
       ? createLocalKnowledgeFallbackPlan(run.goal)
       : ensureLlmWikiTraversalPlan(
         run.goal,
         ensureKnowledgeOrganizationPlan(run.goal, await this.requestAgentReplan(runId, run.replanCount, run.goal, replanFeedback)),
-        this.hasRelevantLlmWiki(run.goal)
+        this.hasRelevantLlmWiki(run.goal) && !excludedCalls.some(isLlmWikiEvidenceCall)
       );
     if (excludedCalls.some((excluded) => plan.steps.some((step) => step.tool === excluded.tool && step.action === excluded.action))) {
       throw new Error("替代计划仍重复安排了已知无结果的工具动作；已拒绝该计划。请发送新的目标继续。 ");
@@ -1959,6 +2007,7 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
       apiKey: this.glmApiKey,
       model: this.settings.glmModel,
       slowResponseMs: this.settings.requestTimeoutMs,
+      postJson,
       onSlowResponse: () => this.notifySlowProviderResponse("GLM")
     });
   }
@@ -1976,6 +2025,7 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
       apiKey: this.deepSeekApiKey,
       model: this.settings.deepSeekModel,
       slowResponseMs: this.settings.requestTimeoutMs,
+      postJson,
       onSlowResponse: () => this.notifySlowProviderResponse("DeepSeek")
     });
   }
@@ -1984,6 +2034,7 @@ export default class KnowledgeLoopAgentPlugin extends Plugin {
     return new TavilyClient({
       apiKey: this.tavilyApiKey,
       slowResponseMs: this.settings.requestTimeoutMs,
+      postJson,
       onSlowResponse: () => this.notifySlowProviderResponse("Tavily")
     });
   }
@@ -2206,11 +2257,24 @@ class LocalKnowledgeUnavailableError extends Error {
   constructor(
     message: string,
     readonly replanFeedback: string,
-    readonly autoContinue = false
+    readonly autoContinue = true
   ) {
     super(message);
     this.name = "LocalKnowledgeUnavailableError";
   }
+}
+
+function isEvidenceCollectionCall(call: AgentToolCall): boolean {
+  return call.tool === "research" && (call.action === "answer-vault" || isLlmWikiEvidenceCall(call));
+}
+
+function isLlmWikiEvidenceCall(call: AgentToolCall): boolean {
+  return call.tool === "research" && (
+    call.action === "wiki-search" ||
+    call.action === "wiki-read" ||
+    call.action === "wiki-follow" ||
+    call.action === "answer-wiki"
+  );
 }
 
 function isRuntimeBlockedError(error: unknown): boolean {

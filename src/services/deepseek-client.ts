@@ -4,7 +4,7 @@ import {
   parseCaptureSuggestion,
   type CaptureSuggestion
 } from "./capture-suggestion";
-import { postJson } from "./api-request";
+import type { JsonPost } from "./json-post";
 import { sanitizeWebAnswer, type WebSearchResult } from "./web-search";
 import {
   buildKnowledgeMapMessages,
@@ -42,6 +42,16 @@ import {
   parseProfileMemorySuggestions,
   type ProfileMemorySuggestion
 } from "../memory/agent-memory";
+import {
+  buildWikiUpdatePreviewMessages,
+  buildWikiVerificationMessages,
+  parseWikiUpdateBlocks,
+  parseWikiVerificationReport,
+  type WikiUpdateBlock,
+  type WikiVerificationPageInput,
+  type WikiVerificationReport,
+  type WikiVerificationWebInput
+} from "../wiki/wiki-verification";
 
 const DEEPSEEK_CHAT_COMPLETIONS_URL = "https://api.deepseek.com/chat/completions";
 const MAX_ANSWER_SOURCES = 4;
@@ -76,6 +86,7 @@ export interface DeepSeekClientOptions {
   apiKey: string;
   model: string;
   slowResponseMs: number;
+  postJson: JsonPost;
   onSlowResponse?: () => void;
 }
 
@@ -316,6 +327,43 @@ export class DeepSeekClient {
     return parseProfileMemorySuggestions(content);
   }
 
+  async verifyWikiCoverage(
+    question: string,
+    pages: WikiVerificationPageInput[],
+    webSources: WikiVerificationWebInput[]
+  ): Promise<WikiVerificationReport> {
+    if (!question.trim() || !pages.length || !webSources.length) {
+      throw new Error("Wiki 核验需要问题、Wiki 页面和联网检索摘要。 ");
+    }
+    const { body } = await this.complete(buildWikiVerificationMessages(question, pages, webSources), true, 1_600);
+    const content = body.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new Error("DeepSeek 没有返回 Wiki 核验报告。 ");
+    }
+    return parseWikiVerificationReport(content, new Set(pages.map((page) => page.path)));
+  }
+
+  async createWikiUpdatePreview(
+    question: string,
+    report: WikiVerificationReport,
+    pages: WikiVerificationPageInput[],
+    webSources: WikiVerificationWebInput[]
+  ): Promise<WikiUpdateBlock[]> {
+    if (!question.trim() || !pages.length || !webSources.length) {
+      throw new Error("Wiki 更新预览需要已有核验上下文。 ");
+    }
+    const { body } = await this.complete(
+      buildWikiUpdatePreviewMessages(question, report, pages, webSources),
+      true,
+      2_000
+    );
+    const content = body.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new Error("DeepSeek 没有返回 Wiki 更新预览。 ");
+    }
+    return parseWikiUpdateBlocks(content, new Set(pages.map((page) => page.path)));
+  }
+
   private async answer(messages: DeepSeekMessage[], emptyMessage: string): Promise<DeepSeekAnswerResult> {
     const { body, durationMs, inputCharacters } = await this.complete(messages);
     const content = body.choices?.[0]?.message?.content?.trim();
@@ -348,7 +396,7 @@ export class DeepSeekClient {
     maxTokens = jsonObject ? JSON_MAX_TOKENS : TEXT_MAX_TOKENS
   ): Promise<DeepSeekCompletion> {
     const startedAt = Date.now();
-    const body = await postJson<DeepSeekResponse>({
+    const body = await this.options.postJson<DeepSeekResponse>({
       url: DEEPSEEK_CHAT_COMPLETIONS_URL,
       apiKey: this.options.apiKey,
       slowResponseMs: this.options.slowResponseMs,

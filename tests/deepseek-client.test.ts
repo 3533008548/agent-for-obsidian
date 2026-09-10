@@ -5,6 +5,7 @@ const { requestUrl } = vi.hoisted(() => ({ requestUrl: vi.fn() }));
 vi.mock("obsidian", () => ({ requestUrl }));
 
 import { DeepSeekClient } from "../src/services/deepseek-client";
+import { postJson } from "../src/services/api-request";
 
 describe("DeepSeekClient", () => {
   afterEach(() => {
@@ -23,7 +24,8 @@ describe("DeepSeekClient", () => {
     const client = new DeepSeekClient({
       apiKey: "test-key",
       model: "deepseek-v4-flash",
-      slowResponseMs: 60_000
+      slowResponseMs: 60_000,
+      postJson
     });
     const sources = Array.from({ length: 5 }, (_, index) => ({
       id: index + 1,
@@ -68,7 +70,8 @@ describe("DeepSeekClient", () => {
     const client = new DeepSeekClient({
       apiKey: "test-key",
       model: "deepseek-v4-flash",
-      slowResponseMs: 60_000
+      slowResponseMs: 60_000,
+      postJson
     });
 
     await expect(client.answerWithSources("乐观锁和悲观锁的区别", [{

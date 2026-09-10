@@ -1,102 +1,69 @@
 import { TFile, type Vault } from "obsidian";
+import { ObsidianKnowledgeRepository } from "../adapters/obsidian-knowledge-repository";
 import type { PolicyEngine } from "../policy/policy-engine";
-import { parseMarkdownIntoChunks, type MarkdownChunk } from "./markdown-parser";
-import { searchMarkdownChunks, type MarkdownSearchResult } from "./markdown-search";
+import {
+  PortableMarkdownKnowledgeIndex,
+  type MarkdownIndexSummary
+} from "./portable-markdown-knowledge-index";
+import type { MarkdownSearchResult } from "./markdown-search";
 
-export interface MarkdownIndexSummary {
-  indexedFiles: number;
-  skippedFiles: number;
-  chunkCount: number;
-}
+export type { MarkdownIndexSummary } from "./portable-markdown-knowledge-index";
 
 export class MarkdownKnowledgeIndex {
-  private readonly chunksByPath = new Map<string, MarkdownChunk[]>();
+  private readonly index: PortableMarkdownKnowledgeIndex;
 
   constructor(
     private readonly vault: Vault,
     private readonly isExcludedPath: (path: string) => boolean = () => false
-  ) {}
+  ) {
+    this.index = new PortableMarkdownKnowledgeIndex(
+      new ObsidianKnowledgeRepository(vault),
+      this.isExcludedPath
+    );
+  }
 
   async rebuild(policy: PolicyEngine): Promise<MarkdownIndexSummary> {
-    this.chunksByPath.clear();
-    let indexedFiles = 0;
-    let skippedFiles = 0;
-
-    for (const file of this.vault.getMarkdownFiles()) {
-      const didIndex = await this.indexFile(file, policy);
-      if (didIndex) {
-        indexedFiles += 1;
-      } else {
-        skippedFiles += 1;
-      }
-    }
-
-    return {
-      indexedFiles,
-      skippedFiles,
-      chunkCount: this.getAllChunks().length
-    };
+    return this.index.rebuild(policy);
   }
 
   async refreshFile(file: TFile, policy: PolicyEngine): Promise<boolean> {
-    return this.indexFile(file, policy);
+    return this.index.refreshContent(
+      {
+        path: file.path,
+        extension: file.extension,
+        mtime: file.stat?.mtime ?? 0,
+        size: file.stat?.size ?? 0
+      },
+      await this.vault.read(file),
+      policy
+    );
   }
 
   remove(path: string): void {
-    this.chunksByPath.delete(path);
+    this.index.remove(path);
   }
 
   clear(): void {
-    this.chunksByPath.clear();
+    this.index.clear();
   }
 
   has(path: string): boolean {
-    return this.chunksByPath.has(path);
+    return this.index.has(path);
   }
 
   search(query: string, limit = 8): MarkdownSearchResult[] {
-    return searchMarkdownChunks(this.getAllChunks(), query, limit);
+    return this.index.search(query, limit);
   }
 
-  getForPath(path: string): MarkdownChunk[] {
-    return [...(this.chunksByPath.get(path) ?? [])];
+  getForPath(path: string) {
+    return this.index.getForPath(path);
   }
 
-  getInFolder(folder: string): MarkdownChunk[] {
-    const normalizedFolder = folder.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
-    if (!normalizedFolder) {
-      return [];
-    }
-    return [...this.chunksByPath.entries()]
-      .filter(([path]) => path.startsWith(`${normalizedFolder}/`))
-      .flatMap(([, chunks]) => chunks);
+  getInFolder(folder: string) {
+    return this.index.getInFolder(folder);
   }
 
   get size(): number {
-    return this.getAllChunks().length;
-  }
-
-  private async indexFile(file: TFile, policy: PolicyEngine): Promise<boolean> {
-    if (file.extension.toLocaleLowerCase() !== "md") {
-      this.chunksByPath.delete(file.path);
-      return false;
-    }
-    if (this.isExcludedPath(file.path)) {
-      this.chunksByPath.delete(file.path);
-      return false;
-    }
-    const decision = policy.decide({ action: "readVault", targetPath: file.path });
-    if (!decision.allowed) {
-      this.chunksByPath.delete(file.path);
-      return false;
-    }
-
-    const content = await this.vault.read(file);
-    this.chunksByPath.set(file.path, parseMarkdownIntoChunks(file.path, content));
-    return true;
-  }
-
-  private getAllChunks(): MarkdownChunk[] {
-    return [...this.chunksByPath.values()].flat();
+    return this.index.size;
   }
 }

@@ -1,4 +1,4 @@
-import { postJson } from "./api-request";
+import type { JsonPost } from "./json-post";
 
 const GLM_CHAT_COMPLETIONS_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
 const GLM_LAYOUT_PARSING_URL = "https://open.bigmodel.cn/api/paas/v4/layout_parsing";
@@ -28,6 +28,7 @@ export interface GlmClientOptions {
   apiKey: string;
   model: string;
   slowResponseMs: number;
+  postJson: JsonPost;
   onSlowResponse?: () => void;
 }
 
@@ -112,7 +113,7 @@ export class GlmClient {
   }
 
   private async postJson<T>(url: string, payload: Record<string, unknown>): Promise<T> {
-    return postJson<T>({
+    return this.options.postJson<T>({
       url,
       apiKey: this.options.apiKey,
       slowResponseMs: this.options.slowResponseMs,

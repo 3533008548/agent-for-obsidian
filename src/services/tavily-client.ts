@@ -1,4 +1,4 @@
-import { postJson } from "./api-request";
+import type { JsonPost } from "./json-post";
 import {
   normalizeWebSearchLimit,
   parseWebSearchResults,
@@ -23,6 +23,7 @@ interface TavilySearchResponse {
 export interface TavilyClientOptions {
   apiKey: string;
   slowResponseMs: number;
+  postJson: JsonPost;
   onSlowResponse?: () => void;
 }
 
@@ -49,7 +50,7 @@ export class TavilyClient {
     }
 
     const limit = normalizeWebSearchLimit(resultLimit);
-    const body = await postJson<TavilySearchResponse>({
+    const body = await this.options.postJson<TavilySearchResponse>({
       url: TAVILY_SEARCH_URL,
       apiKey: this.options.apiKey,
       slowResponseMs: this.options.slowResponseMs,

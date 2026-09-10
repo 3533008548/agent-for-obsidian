@@ -95,10 +95,13 @@ describe("Agent runtime", () => {
     expect(ensureLlmWikiTraversalPlan("LangGraph 的状态如何传递", rawAnswerPlan, false)).toBe(rawAnswerPlan);
   });
 
-  it("uses one deterministic web fallback after a local knowledge miss", () => {
-    expect(createLocalKnowledgeFallbackPlan("Pydantic 是什么")).toMatchObject({
+  it("uses one deterministic web fallback when local evidence is insufficient", () => {
+    const fallback = createLocalKnowledgeFallbackPlan("Pydantic 是什么");
+    expect(fallback).toMatchObject({
       steps: [{ tool: "research", action: "answer-web" }]
     });
+    expect(fallback.summary).toContain("证据不足");
+    expect(fallback.steps[0].reason).toContain("直接证据");
   });
 
   it("persists an ordered run and completes after every step is terminal", () => {

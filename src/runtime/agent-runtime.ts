@@ -206,12 +206,12 @@ export function ensureLlmWikiTraversalPlan(goal: string, plan: AgentRunPlan, has
 export function createLocalKnowledgeFallbackPlan(goal: string): AgentRunPlan {
   const subject = goal.trim().replace(/\s+/gu, " ").slice(0, 88) || "当前问题";
   return {
-    summary: "本地知识库没有找到与问题直接相关的资料，已改为联网研究回答；执行联网步骤前仍需确认。",
+    summary: "当前本地证据不足以完整回答，已改为联网补证并生成完整回答。",
     steps: [{
       tool: "research",
       action: "answer-web",
       title: `联网研究：${subject}`,
-      reason: "本地检索没有命中问题中的关键技术名，继续重复本地搜索没有信息增益。"
+      reason: "当前本地资料没有回答所需的直接证据，继续重复同一检索没有信息增益。"
     }]
   };
 }

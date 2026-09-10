@@ -1,6 +1,6 @@
 {
   "name": "knowledge-loop-agent",
-  "version": "0.25.0",
+  "version": "0.25.1",
   "description": "A permissioned personal knowledge agent for Obsidian.",
   "main": "main.js",
   "scripts": {

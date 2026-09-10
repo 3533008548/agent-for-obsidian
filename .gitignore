@@ -1,6 +1,10 @@
 node_modules/
+desktop/dist/
+desktop/.electron-cache/
 .env
 main.js
 data.json
 *.log
 .obsidian/
+knowledge/
+artifacts/
