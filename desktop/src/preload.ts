@@ -13,7 +13,13 @@ const api: DesktopApi = {
   search: (query) => ipcRenderer.invoke("knowledge:search", query),
   listNotes: () => ipcRenderer.invoke("knowledge:list-notes"),
   previewSource: (path) => ipcRenderer.invoke("knowledge:preview-source", path),
-  openSource: (path) => ipcRenderer.invoke("knowledge:open-source", path)
+  openSource: (path) => ipcRenderer.invoke("knowledge:open-source", path),
+  planAgentRun: (goal) => ipcRenderer.invoke("agent:plan-run", goal),
+  runAgentStep: (runId, stepId) => ipcRenderer.invoke("agent:run-step", runId, stepId),
+  skipAgentStep: (runId, stepId) => ipcRenderer.invoke("agent:skip-step", runId, stepId),
+  cancelAgentRun: (runId) => ipcRenderer.invoke("agent:cancel-run", runId),
+  getWritePreviews: () => ipcRenderer.invoke("write:get-previews"),
+  applyWritePreviews: () => ipcRenderer.invoke("write:apply-previews")
 };
 
 contextBridge.exposeInMainWorld("knowledgeLoop", api);

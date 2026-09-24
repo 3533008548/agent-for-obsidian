@@ -121,6 +121,34 @@ export interface ObsidianMigrationState {
   totalFiles: number;
 }
 
+/** Serializable view of one agent run, safe to send to the renderer. */
+export interface AgentRunStepView {
+  id: string;
+  tool: string;
+  action: string;
+  title: string;
+  reason: string;
+  requiresConfirmation: boolean;
+  status: "pending" | "running" | "completed" | "skipped" | "failed" | "blocked";
+  resultSummary?: string;
+}
+
+export interface AgentRunView {
+  id: string;
+  goal: string;
+  status: "planned" | "running" | "completed" | "cancelled";
+  planSummary: string;
+  replanCount: number;
+  steps: AgentRunStepView[];
+}
+
+export interface WritePreviewView {
+  targetPath: string;
+  existedBefore: boolean;
+  beforeContent: string;
+  afterContent: string;
+}
+
 export interface DesktopApi {
   chooseWorkspace(): Promise<WorkspaceState | null>;
   migrateObsidianVault(): Promise<ObsidianMigrationState | null>;
@@ -134,4 +162,10 @@ export interface DesktopApi {
   listNotes(): Promise<DesktopNoteEntry[]>;
   previewSource(path: string): Promise<DesktopFilePreview>;
   openSource(path: string): Promise<void>;
+  planAgentRun(goal: string): Promise<AgentRunView>;
+  runAgentStep(runId: string, stepId: string): Promise<AgentRunView>;
+  skipAgentStep(runId: string, stepId: string): Promise<AgentRunView>;
+  cancelAgentRun(runId: string): Promise<AgentRunView>;
+  getWritePreviews(): Promise<WritePreviewView[]>;
+  applyWritePreviews(): Promise<string[]>;
 }

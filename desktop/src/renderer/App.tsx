@@ -1,13 +1,24 @@
 import { FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import type {
+  AgentRunView,
   DesktopAgentSource,
   DesktopFilePreview,
   DesktopNoteEntry,
   DesktopWikiUpdatePreview,
   DesktopWikiVerificationReport,
   ProviderStatus,
-  WorkspaceState
+  WorkspaceState,
+  WritePreviewView
 } from "../shared/desktop-api";
+
+const STEP_STATUS_LABELS: Record<AgentRunView["steps"][number]["status"], string> = {
+  pending: "待执行",
+  running: "执行中",
+  completed: "已完成",
+  skipped: "已跳过",
+  failed: "失败",
+  blocked: "被阻止"
+};
 
 interface ConversationMessage {
   id: string;
@@ -36,6 +47,10 @@ export function App() {
   const [input, setInput] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [isCreatingWikiUpdate, setIsCreatingWikiUpdate] = useState(false);
+  const [run, setRun] = useState<AgentRunView | null>(null);
+  const [writePreviews, setWritePreviews] = useState<WritePreviewView[]>([]);
+  const [isPlanning, setIsPlanning] = useState(false);
+  const [isRunningStep, setIsRunningStep] = useState(false);
   const [filePreview, setFilePreview] = useState<DesktopFilePreview | null>(null);
   const [selectedNotePath, setSelectedNotePath] = useState<string | null>(null);
   const [notes, setNotes] = useState<DesktopNoteEntry[]>([]);
@@ -260,6 +275,96 @@ export function App() {
     }
   }
 
+  async function planGoal(goal: string): Promise<void> {
+    if (!api) {
+      return;
+    }
+    if (!workspace) {
+      appendError(new Error("请先选择本地知识库目录。"));
+      return;
+    }
+    setIsPlanning(true);
+    setInput("");
+    setMessages((current) => [...current, { id: "user-" + Date.now(), role: "user", text: goal }]);
+    try {
+      const next = await api.planAgentRun(goal);
+      setRun(next);
+      setWritePreviews([]);
+      setMessages((current) => [
+        ...current,
+        { id: "plan-" + Date.now(), role: "agent", text: "已生成执行计划：" + next.planSummary }
+      ]);
+    } catch (error) {
+      appendError(error);
+    } finally {
+      setIsPlanning(false);
+    }
+  }
+
+  async function runStep(stepId: string): Promise<void> {
+    if (!api || !run) {
+      return;
+    }
+    setIsRunningStep(true);
+    try {
+      const next = await api.runAgentStep(run.id, stepId);
+      setRun(next);
+      const finished = next.steps.find((step) => step.id === stepId);
+      if (finished?.resultSummary) {
+        setMessages((current) => [
+          ...current,
+          { id: "step-" + Date.now(), role: "agent", text: finished.title + "：" + finished.resultSummary }
+        ]);
+      }
+      setWritePreviews(await api.getWritePreviews());
+    } catch (error) {
+      appendError(error);
+    } finally {
+      setIsRunningStep(false);
+    }
+  }
+
+  async function skipStep(stepId: string): Promise<void> {
+    if (!api || !run) {
+      return;
+    }
+    try {
+      setRun(await api.skipAgentStep(run.id, stepId));
+    } catch (error) {
+      appendError(error);
+    }
+  }
+
+  async function cancelRun(): Promise<void> {
+    if (!api || !run) {
+      return;
+    }
+    try {
+      setRun(await api.cancelAgentRun(run.id));
+      setWritePreviews([]);
+    } catch (error) {
+      appendError(error);
+    }
+  }
+
+  async function applyPreviews(): Promise<void> {
+    if (!api) {
+      return;
+    }
+    try {
+      const paths = await api.applyWritePreviews();
+      setWritePreviews([]);
+      setMessages((current) => [
+        ...current,
+        { id: "write-" + Date.now(), role: "agent", text: "已写入 " + paths.length + " 个文件：" + paths.join("、") }
+      ]);
+      setWorkspace(await api.getWorkspace());
+      await refreshNotes();
+    } catch (error) {
+      appendError(error);
+    }
+  }
+
   function appendError(error: unknown): void {
     const message = error instanceof Error ? error.message : "发生未知错误。";
     setMessages((current) => [
@@ -415,6 +520,77 @@ export function App() {
             <p>正在生成 Wiki 更新预览…</p>
           </article>
         ) : null}
+        {isPlanning ? (
+          <article className="message agent loading">
+            <span className="message-label">知识助手</span>
+            <p>正在生成执行计划…</p>
+          </article>
+        ) : null}
+        {run ? (
+          <section className="run-card" aria-label="Agent 执行计划">
+            <header className="run-card-header">
+              <div>
+                <p className="run-card-eyebrow">执行计划 · {run.status === "completed" ? "已完成" : "进行中"}</p>
+                <h3>{run.goal}</h3>
+                <small>{run.replanCount > 0 ? "已自动调整过一次计划。" : "最多四步，每步仍需确认。"}</small>
+              </div>
+              <button type="button" onClick={() => void cancelRun()} disabled={isRunningStep}>
+                取消运行
+              </button>
+            </header>
+            <ol className="run-steps">
+              {run.steps.map((step) => (
+                <li key={step.id} className={"run-step status-" + step.status}>
+                  <div className="run-step-main">
+                    <p className="run-step-title">{step.title}</p>
+                    <p className="run-step-reason">{step.reason}</p>
+                    {step.resultSummary ? <p className="run-step-result">{step.resultSummary}</p> : null}
+                  </div>
+                  <div className="run-step-actions">
+                    <span className="run-step-status">{STEP_STATUS_LABELS[step.status]}</span>
+                    {step.status === "pending" ? (
+                      <>
+                        <button type="button" onClick={() => void runStep(step.id)} disabled={isRunningStep}>
+                          {step.requiresConfirmation ? "确认并执行" : "执行"}
+                        </button>
+                        <button type="button" onClick={() => void skipStep(step.id)} disabled={isRunningStep}>
+                          跳过
+                        </button>
+                      </>
+                    ) : null}
+                    {(step.status === "failed" || step.status === "blocked") ? (
+                      <button type="button" onClick={() => void runStep(step.id)} disabled={isRunningStep}>
+                        重试
+                      </button>
+                    ) : null}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </section>
+        ) : null}
+        {writePreviews.length ? (
+          <section className="run-card" aria-label="写入预览">
+            <header className="run-card-header">
+              <div>
+                <p className="run-card-eyebrow">写入预览 · 未写入磁盘</p>
+                <h3>{writePreviews.length} 个待确认文件</h3>
+                <small>确认后才会写入；预览后文件若被改动会拒绝覆盖。</small>
+              </div>
+              <button type="button" onClick={() => void applyPreviews()} disabled={isRunningStep}>
+                确认写入
+              </button>
+            </header>
+            <ul className="preview-list">
+              {writePreviews.map((preview) => (
+                <li key={preview.targetPath}>
+                  <p className="preview-path">{preview.targetPath}{preview.existedBefore ? "（将更新已有文件）" : "（新建）"}</p>
+                  <pre className="preview-body">{preview.afterContent.slice(0, 600)}</pre>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
         <div ref={bottomRef} />
       </section>
       </div>
@@ -430,6 +606,15 @@ export function App() {
         />
         <button type="submit" disabled={!input.trim() || isSearching || isCreatingWikiUpdate}>
           发送
+        </button>
+        <button
+          type="button"
+          className="composer-plan"
+          onClick={() => void planGoal(input.trim())}
+          disabled={!input.trim() || isSearching || isPlanning || isCreatingWikiUpdate}
+          title="让 Agent 生成至多四步的执行计划，逐步确认后执行"
+        >
+          {isPlanning ? "规划中…" : "生成计划"}
         </button>
       </form>
       {filePreview ? (

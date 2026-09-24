@@ -16,6 +16,9 @@ import { DesktopWriteService } from "../../src/desktop/desktop-write-service";
 import { DesktopWikiService } from "../../src/desktop/desktop-wiki-service";
 import { DesktopAttachmentService, type DesktopAttachmentState } from "../../src/desktop/desktop-attachment-service";
 import { DesktopRelationService } from "../../src/desktop/desktop-relation-service";
+import { DesktopAgentRuntime } from "../../src/desktop/desktop-agent-runtime";
+import { DesktopKnowledgeSystemService } from "../../src/desktop/desktop-knowledge-system-service";
+import { DesktopMaintenanceService } from "../../src/desktop/desktop-maintenance-service";
 import { DesktopWikiVerificationService } from "../../src/desktop/desktop-wiki-verification-service";
 import { detectDesktopAgentIntent } from "../../src/desktop/desktop-intent-router";
 import { formatPastedContent } from "../../src/paste/paste-formatter";
@@ -35,7 +38,9 @@ import type {
   ObsidianMigrationState,
   ProviderStatus,
   SessionStatus,
-  WorkspaceState
+  WorkspaceState,
+  AgentRunView,
+  WritePreviewView
 } from "./shared/desktop-api";
 
 const WINDOW_OPTIONS = {
@@ -74,6 +79,10 @@ class DesktopKnowledgeWorkspace {
   private attachmentService: DesktopAttachmentService | null = null;
   private relationService: DesktopRelationService | null = null;
   private wikiVerificationService: DesktopWikiVerificationService | null = null;
+  private agentRuntime: DesktopAgentRuntime | null = null;
+  private knowledgeService: DesktopKnowledgeSystemService | null = null;
+  private maintenanceService: DesktopMaintenanceService | null = null;
+  private activeNotePath: string | null = null;
   private sessionStates: Record<string, AgentSessionStoreState> = {};
   private didLoadSessionStates = false;
   private readonly policy = new PolicyEngine(createDefaultPermissionPolicy());
@@ -552,6 +561,146 @@ class DesktopKnowledgeWorkspace {
     await writeAttachmentStates(states);
   }
 
+  /**
+   * Build the semantic agent runtime.
+   *
+   * Explicit operational commands still use the regex intent router; every
+   * knowledge goal now goes through a model-proposed, user-confirmed plan.
+   */
+  private async createAgentRuntime(): Promise<DesktopAgentRuntime> {
+    if (!this.repository || !this.index || !this.writeService || !this.attachmentService) {
+      throw new Error("请先选择或迁移本地知识库。");
+    }
+    const configuration = await readDesktopAgentConfiguration();
+    const repository = this.repository;
+    const index = this.index;
+    const write = this.writeService;
+    this.knowledgeService = new DesktopKnowledgeSystemService(index, this.policy, write, {
+      deepSeekApiKey: configuration.deepSeekApiKey,
+      deepSeekModel: configuration.deepSeekModel,
+      requestTimeoutMs: configuration.requestTimeoutMs,
+      knowledgeSystemFolder: KNOWLEDGE_SYSTEM_FOLDER
+    });
+    this.maintenanceService = new DesktopMaintenanceService(index, this.policy, {
+      deepSeekApiKey: configuration.deepSeekApiKey,
+      deepSeekModel: configuration.deepSeekModel,
+      requestTimeoutMs: configuration.requestTimeoutMs
+    });
+    this.relationService = new DesktopRelationService(repository, index, this.policy, configuration);
+    this.wikiService = new DesktopWikiService(repository, index, this.policy, {
+      deepSeekApiKey: configuration.deepSeekApiKey,
+      deepSeekModel: configuration.deepSeekModel,
+      requestTimeoutMs: configuration.requestTimeoutMs,
+      knowledgeSystemFolder: KNOWLEDGE_SYSTEM_FOLDER
+    });
+    const agent = new DesktopAgentService(index, {
+      ...configuration,
+      attachmentSearch: this.attachmentService.search.bind(this.attachmentService)
+    });
+    const runtime = new DesktopAgentRuntime(
+      {
+        index,
+        policy: this.policy,
+        agent,
+        wiki: this.wikiService,
+        knowledge: this.knowledgeService,
+        maintenance: this.maintenanceService,
+        attachments: this.attachmentService,
+        relation: this.relationService,
+        write,
+        knowledgeSystemFolder: KNOWLEDGE_SYSTEM_FOLDER,
+        deepSeekApiKey: () => configuration.deepSeekApiKey,
+        deepSeekModel: () => configuration.deepSeekModel,
+        requestTimeoutMs: () => configuration.requestTimeoutMs,
+        activeNotePath: () => this.activeNotePath,
+        formatClipboard: async () => {
+          const result = this.formatClipboard();
+          return { content: result.text, changed: result.changed };
+        },
+        describeStatus: () => this.describeStatus(configuration)
+      },
+      {
+        deepSeekApiKey: () => configuration.deepSeekApiKey,
+        deepSeekModel: () => configuration.deepSeekModel,
+        requestTimeoutMs: () => configuration.requestTimeoutMs,
+        hasTavilyApiKey: () => Boolean(configuration.tavilyApiKey.trim()),
+        hasRelevantWiki: async (goal) => {
+          const pages = await this.wikiService?.searchPages(goal, 1) ?? [];
+          return pages.length > 0;
+        }
+      }
+    );
+    this.agentRuntime = runtime;
+    return runtime;
+  }
+
+  private requireRuntime(): DesktopAgentRuntime {
+    if (!this.agentRuntime) {
+      throw new Error("请先生成一个 Agent 运行计划。");
+    }
+    return this.agentRuntime;
+  }
+
+  private describeStatus(configuration: Awaited<ReturnType<typeof readDesktopAgentConfiguration>>): string {
+    return [
+      `知识库：${this.rootPath ?? "未选择"}`,
+      `索引 ${this.summary?.indexedFiles ?? 0} 篇笔记、${this.summary?.chunkCount ?? 0} 个片段`,
+      `DeepSeek ${configuration.deepSeekApiKey.trim() ? "已配置" : "未配置"}`,
+      `Tavily ${configuration.tavilyApiKey.trim() ? "已配置" : "未配置"}`
+    ].join("；") + "。";
+  }
+
+  setActiveNote(path: string | null): void {
+    this.activeNotePath = path ?? null;
+  }
+
+  async planRun(goal: string): Promise<AgentRunView> {
+    const runtime = await this.createAgentRuntime();
+    return toAgentRunView(await runtime.plan(goal));
+  }
+
+  async runStep(runId: string, stepId: string): Promise<AgentRunView> {
+    return toAgentRunView(await this.requireRuntime().executeStep(runId, stepId, true));
+  }
+
+  async skipStep(runId: string, stepId: string): Promise<AgentRunView> {
+    return toAgentRunView(await this.requireRuntime().skipStep(runId, stepId));
+  }
+
+  async cancelRun(runId: string): Promise<AgentRunView> {
+    return toAgentRunView(await this.requireRuntime().cancel(runId));
+  }
+
+  async getWritePreviews(): Promise<WritePreviewView[]> {
+    const state = this.requireRuntime().getState();
+    return (state.writePreviews ?? []).map((preview) => ({
+      targetPath: preview.targetPath,
+      existedBefore: preview.existedBefore,
+      beforeContent: preview.beforeContent,
+      afterContent: preview.afterContent
+    }));
+  }
+
+  /** Write only what the user has previewed. */
+  async applyWritePreviews(): Promise<string[]> {
+    const runtime = this.requireRuntime();
+    const state = runtime.getState();
+    const previews = state.writePreviews ?? [];
+    if (!previews.length || !this.writeService) {
+      throw new Error("当前没有待确认的写入预览。");
+    }
+    const written: string[] = [];
+    for (const preview of previews) {
+      const result = await this.writeService.apply(preview);
+      written.push(result.targetPath);
+    }
+    if (state.wikiDraft) {
+      await this.wikiService?.persistRegistry(state.wikiDraft.registry);
+    }
+    this.summary = this.index ? await this.index.rebuild(this.policy) : this.summary;
+    return written;
+  }
+
   private toState(): WorkspaceState {
     if (!this.rootPath || !this.summary) {
       throw new Error("知识库尚未初始化。");
@@ -564,6 +713,44 @@ class DesktopKnowledgeWorkspace {
       chunkCount: this.summary.chunkCount
     };
   }
+}
+
+const KNOWLEDGE_SYSTEM_FOLDER = "知识体系/Agent";
+
+function toAgentRunView(run: {
+  id: string;
+  goal: string;
+  status: "planned" | "running" | "completed" | "cancelled";
+  planSummary: string;
+  replanCount: number;
+  steps: Array<{
+    id: string;
+    tool: string;
+    action: string;
+    title: string;
+    reason: string;
+    requiresConfirmation: boolean;
+    status: "pending" | "running" | "completed" | "skipped" | "failed" | "blocked";
+    resultSummary?: string;
+  }>;
+}): AgentRunView {
+  return {
+    id: run.id,
+    goal: run.goal,
+    status: run.status,
+    planSummary: run.planSummary,
+    replanCount: run.replanCount,
+    steps: run.steps.map((step) => ({
+      id: step.id,
+      tool: step.tool,
+      action: step.action,
+      title: step.title,
+      reason: step.reason,
+      requiresConfirmation: step.requiresConfirmation,
+      status: step.status,
+      ...(step.resultSummary ? { resultSummary: step.resultSummary } : {})
+    }))
+  };
 }
 
 const workspace = new DesktopKnowledgeWorkspace();
@@ -767,6 +954,17 @@ ipcMain.handle("knowledge:search", (_event, query: string) => workspace.search(q
 ipcMain.handle("knowledge:list-notes", () => workspace.listNotes());
 ipcMain.handle("knowledge:preview-source", (_event, path: string) => workspace.previewSource(path));
 ipcMain.handle("knowledge:open-source", (_event, path: string) => workspace.openSource(path));
+ipcMain.handle("agent:plan-run", (_event, goal: string, notePath?: string) => {
+  if (typeof notePath === "string") {
+    workspace.setActiveNote(notePath);
+  }
+  return workspace.planRun(goal);
+});
+ipcMain.handle("agent:run-step", (_event, runId: string, stepId: string) => workspace.runStep(runId, stepId));
+ipcMain.handle("agent:skip-step", (_event, runId: string, stepId: string) => workspace.skipStep(runId, stepId));
+ipcMain.handle("agent:cancel-run", (_event, runId: string) => workspace.cancelRun(runId));
+ipcMain.handle("write:get-previews", () => workspace.getWritePreviews());
+ipcMain.handle("write:apply-previews", () => workspace.applyWritePreviews());
 
 app.whenReady().then(async () => {
   app.setName("知识环");

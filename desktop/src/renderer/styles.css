@@ -587,7 +587,7 @@ h1 {
 
 .composer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 10px;
   margin-left: 266px;
   border-top: 1px solid #e8e8e8;
@@ -680,4 +680,147 @@ h1 {
   .markdown-preview {
     padding: 18px;
   }
+}
+
+.composer .composer-plan {
+  background: #f3f0ff;
+  color: #4a3a8f;
+}
+
+.composer .composer-plan:disabled {
+  background: #ececf1;
+  color: #9a9aa2;
+}
+
+.run-card {
+  border: 1px solid #e4e1f5;
+  border-radius: 14px;
+  background: #fbfaff;
+  padding: 16px 18px;
+  margin: 14px 0 0;
+}
+
+.run-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.run-card-eyebrow {
+  margin: 0;
+  font-size: 12px;
+  color: #7a6bb0;
+}
+
+.run-card h3 {
+  margin: 4px 0 2px;
+  font-size: 15px;
+}
+
+.run-card small {
+  color: #83838d;
+  font-size: 12px;
+}
+
+.run-card-header button {
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 9px;
+  background: #1f2024;
+  color: #fff;
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+.run-steps {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.run-step {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+  border: 1px solid #eceaf6;
+  border-radius: 11px;
+  background: #fff;
+  padding: 11px 13px;
+}
+
+.run-step.status-completed {
+  border-color: #cfe6cf;
+}
+
+.run-step.status-failed,
+.run-step.status-blocked {
+  border-color: #f0cdcd;
+}
+
+.run-step-title {
+  margin: 0;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.run-step-reason {
+  margin: 4px 0 0;
+  color: #7b7b85;
+  font-size: 12.5px;
+}
+
+.run-step-result {
+  margin: 6px 0 0;
+  color: #3f6b3f;
+  font-size: 12.5px;
+}
+
+.run-step-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.run-step-status {
+  font-size: 12px;
+  color: #83838d;
+}
+
+.run-step-actions button {
+  border: 1px solid #d8d8e0;
+  background: #fff;
+  border-radius: 8px;
+  padding: 6px 11px;
+  font-size: 12.5px;
+}
+
+.preview-list {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.preview-path {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.preview-body {
+  margin: 0;
+  max-height: 190px;
+  overflow: auto;
+  border: 1px solid #eceaf6;
+  border-radius: 9px;
+  background: #fff;
+  padding: 10px 12px;
+  font: 12px/1.55 "Cascadia Mono", Consolas, monospace;
+  white-space: pre-wrap;
 }
