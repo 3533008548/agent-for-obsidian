@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .electron-cache/
+.workbuddy/
 .env
 data.json
 *.log
