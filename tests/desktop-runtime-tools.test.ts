@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_TOOL_DEFINITIONS, type AgentRun, type AgentRunStep } from "../src/runtime/agent-runtime";
-import { RuntimeToolBlockedError } from "../src/runtime/agent-runtime-errors";
+import { AGENT_TOOL_DEFINITIONS, type AgentRun, type AgentRunStep } from "../core/runtime/agent-runtime";
+import { RuntimeToolBlockedError } from "../core/runtime/agent-runtime-errors";
 import {
   createDesktopRuntimeToolRegistry,
   type DesktopRuntimeState,
   type DesktopRuntimeToolDependencies
-} from "../src/desktop/desktop-runtime-tools";
+} from "../core/desktop/desktop-runtime-tools";
 
 function createDependencies(overrides: Partial<DesktopRuntimeToolDependencies> = {}) {
   const state: DesktopRuntimeState = {};
@@ -52,7 +52,7 @@ function createDependencies(overrides: Partial<DesktopRuntimeToolDependencies> =
       },
       relation: {
         preview: async () => ({ path: "a.md", summary: "无关联", relationCount: 0, afterContent: null }),
-        apply: async (preview) => preview
+        apply: async (preview: { path: string }) => preview
       },
       write: {
         previewAnswer: async () => createPreview(),
@@ -127,7 +127,7 @@ describe("desktop runtime tool registry", () => {
     const { deps, state } = createDependencies({
       agent: {
         answer: async () => {
-          const { LocalKnowledgeUnavailableError } = await import("../src/runtime/agent-runtime-errors");
+          const { LocalKnowledgeUnavailableError } = await import("../core/runtime/agent-runtime-errors");
           throw new LocalKnowledgeUnavailableError("本地没有证据", "不要重复 answer-vault");
         },
         answerFromWeb: async () => ({ content: "", mode: "web", evidenceComplete: true, sources: [] })

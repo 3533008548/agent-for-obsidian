@@ -1,26 +1,34 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const { requestUrl } = vi.hoisted(() => ({ requestUrl: vi.fn() }));
+const { fetchMock } = vi.hoisted(() => ({ fetchMock: vi.fn() }));
 
-vi.mock("obsidian", () => ({ requestUrl }));
+/** Minimal stand-in for the fetch-based request adapter used by the desktop shell. */
+const postJson = async <T>(request: {
+  url: string;
+  apiKey: string;
+  payload: unknown;
+}): Promise<T> => {
+  fetchMock(request);
+  return {
+    id: "request-1",
+    model: "deepseek-v4-flash",
+    choices: [{ message: { content: (fetchMock as unknown as { content: string }).content } }]
+  } as T;
+};
 
-import { DeepSeekClient } from "../src/services/deepseek-client";
-import { postJson } from "../src/services/api-request";
+import { DeepSeekClient } from "../core/services/deepseek-client";
 
 describe("DeepSeekClient", () => {
   afterEach(() => {
-    requestUrl.mockReset();
+    fetchMock.mockReset();
   });
 
+  function respondWith(payload: unknown): void {
+    (fetchMock as unknown as { content: string }).content = JSON.stringify(payload);
+  }
+
   it("limits normal answers to four clipped sources and disables thinking", async () => {
-    requestUrl.mockResolvedValue({
-      status: 200,
-      json: {
-        id: "request-1",
-        model: "deepseek-v4-flash",
-        choices: [{ message: { content: JSON.stringify({ answer: "回答", evidenceComplete: true, missingEvidence: [] }) } }]
-      }
-    });
+    respondWith({ answer: "回答", evidenceComplete: true, missingEvidence: [] });
     const client = new DeepSeekClient({
       apiKey: "test-key",
       model: "deepseek-v4-flash",
@@ -35,13 +43,12 @@ describe("DeepSeekClient", () => {
     }));
 
     const result = await client.answerWithSources("测试问题", sources);
-    const request = requestUrl.mock.calls[0][0] as { body: string };
-    const payload = JSON.parse(request.body) as {
+    const payload = (fetchMock.mock.calls[0][0] as { payload: {
       max_tokens: number;
       thinking: { type: string };
       response_format: { type: string };
       messages: Array<{ content: string }>;
-    };
+    } }).payload;
     const sourceMessage = payload.messages.at(-1)?.content ?? "";
 
     expect(result.sourceCount).toBe(4);
@@ -57,15 +64,10 @@ describe("DeepSeekClient", () => {
   });
 
   it("reports concepts that lack direct local evidence", async () => {
-    requestUrl.mockResolvedValue({
-      status: 200,
-      json: {
-        choices: [{ message: { content: JSON.stringify({
-          answer: "来源只说明了乐观锁。[S1]",
-          evidenceComplete: false,
-          missingEvidence: ["悲观锁"]
-        }) } }]
-      }
+    respondWith({
+      answer: "来源只说明了乐观锁。[S1]",
+      evidenceComplete: false,
+      missingEvidence: ["悲观锁"]
     });
     const client = new DeepSeekClient({
       apiKey: "test-key",

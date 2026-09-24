@@ -1,4 +1,3 @@
-import type { TFile } from "obsidian";
 import type { SourceRef } from "../domain/source-ref";
 import type { PolicyEngine } from "../policy/policy-engine";
 import type { MarkdownChunk } from "./markdown-parser";
@@ -27,6 +26,18 @@ export interface AttachmentScanSummary {
   removed: number;
 }
 
+/**
+ * The minimal file shape the scanner needs.
+ *
+ * Both the Obsidian vault adapter and the desktop repository can produce it,
+ * which keeps this index free of any host API.
+ */
+export interface AttachmentScanFile {
+  path: string;
+  extension: string;
+  stat: { mtime: number; size: number };
+}
+
 export class AttachmentIndex {
   private readonly records = new Map<string, AttachmentIndexRecord>();
 
@@ -38,7 +49,7 @@ export class AttachmentIndex {
     }
   }
 
-  scan(files: TFile[], policy: PolicyEngine): AttachmentScanSummary {
+  scan(files: AttachmentScanFile[], policy: PolicyEngine): AttachmentScanSummary {
     const seenPaths = new Set<string>();
     let queued = 0;
     let unchanged = 0;

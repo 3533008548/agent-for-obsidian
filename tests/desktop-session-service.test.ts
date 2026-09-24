@@ -2,8 +2,8 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DesktopSessionService } from "../src/desktop/desktop-session-service";
-import { NodeFileSystemKnowledgeRepository } from "../src/desktop/node-file-system-knowledge-repository";
+import { DesktopSessionService } from "../core/desktop/desktop-session-service";
+import { NodeFileSystemKnowledgeRepository } from "../core/desktop/node-file-system-knowledge-repository";
 
 const temporaryRoots: string[] = [];
 

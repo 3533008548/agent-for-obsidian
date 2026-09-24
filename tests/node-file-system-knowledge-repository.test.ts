@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { NodeFileSystemKnowledgeRepository } from "../src/desktop/node-file-system-knowledge-repository";
+import { NodeFileSystemKnowledgeRepository } from "../core/desktop/node-file-system-knowledge-repository";
 
 const temporaryRoots: string[] = [];
 

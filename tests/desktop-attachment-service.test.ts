@@ -2,9 +2,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DesktopAttachmentService } from "../src/desktop/desktop-attachment-service";
-import { NodeFileSystemKnowledgeRepository } from "../src/desktop/node-file-system-knowledge-repository";
-import { createDefaultPermissionPolicy, PolicyEngine } from "../src/policy/policy-engine";
+import { DesktopAttachmentService } from "../core/desktop/desktop-attachment-service";
+import { NodeFileSystemKnowledgeRepository } from "../core/desktop/node-file-system-knowledge-repository";
+import { createDefaultPermissionPolicy, PolicyEngine } from "../core/policy/policy-engine";
 
 const roots: string[] = [];
 

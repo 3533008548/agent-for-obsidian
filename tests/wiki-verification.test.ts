@@ -3,7 +3,7 @@ import {
   mergeWikiVerificationBlock,
   parseWikiUpdateBlocks,
   parseWikiVerificationReport
-} from "../src/wiki/wiki-verification";
+} from "../core/wiki/wiki-verification";
 
 describe("Wiki verification", () => {
   it("only accepts findings that point to supplied Wiki pages", () => {

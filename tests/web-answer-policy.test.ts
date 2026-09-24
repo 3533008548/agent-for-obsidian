@@ -3,7 +3,7 @@ import {
   getNoWebResultMessage,
   requiresFreshWebSources,
   shouldUseGeneralKnowledgeFallback
-} from "../src/services/web-answer-policy";
+} from "../core/services/web-answer-policy";
 
 describe("web answer fallback policy", () => {
   it("recognizes questions that require fresh sources", () => {

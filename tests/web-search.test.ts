@@ -4,7 +4,7 @@ import {
   parseWebSearchResults,
   renderWebAnswerCaptureContent,
   sanitizeWebAnswer
-} from "../src/services/web-search";
+} from "../core/services/web-search";
 
 describe("web search result processing", () => {
   it("keeps only unique HTTP sources and creates traceable web SourceRefs", () => {

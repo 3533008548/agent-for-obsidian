@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { hashText } from "../src/domain/content-hash";
+import { hashText } from "../core/domain/content-hash";
 import {
   selectSourcesForWikiCompilation,
   type DesktopWikiCompileMode
-} from "../src/desktop/desktop-wiki-service";
-import type { KnowledgeIntegrationSource } from "../src/integration/knowledge-system";
-import type { LlmWikiTopicRecord } from "../src/wiki/llm-wiki-system";
+} from "../core/desktop/desktop-wiki-service";
+import type { KnowledgeIntegrationSource } from "../core/integration/knowledge-system";
+import type { LlmWikiTopicRecord } from "../core/wiki/llm-wiki-system";
 
 function source(path: string, content: string, heading = path): KnowledgeIntegrationSource {
   return {

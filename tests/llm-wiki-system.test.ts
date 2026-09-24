@@ -6,8 +6,8 @@ import {
   markLlmWikiSourceStale,
   searchLlmWiki,
   updateLlmWikiTopicSourceHealth
-} from "../src/wiki/llm-wiki-system";
-import type { KnowledgeIntegrationSession } from "../src/integration/knowledge-system";
+} from "../core/wiki/llm-wiki-system";
+import type { KnowledgeIntegrationSession } from "../core/integration/knowledge-system";
 
 const session: KnowledgeIntegrationSession = {
   id: "session-1",

@@ -7,7 +7,7 @@ import {
   renderDailyAppend,
   sanitizeFileStem,
   validateActionProposal
-} from "../src/actions/action-proposal";
+} from "../core/actions/action-proposal";
 
 describe("action proposals", () => {
   it("normalizes a topic into a safe file stem without losing Chinese text", () => {

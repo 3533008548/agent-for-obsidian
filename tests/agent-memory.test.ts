@@ -10,7 +10,7 @@ import {
   renderNewAgentSession,
   renderSessionExchange,
   renderSessionToolResult
-} from "../src/memory/agent-memory";
+} from "../core/memory/agent-memory";
 
 describe("Agent memory", () => {
   it("keeps a single active session and persists only session metadata", () => {

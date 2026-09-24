@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AttachmentBatchQueue,
   DEFAULT_ATTACHMENT_BATCH_LIMITS
-} from "../src/indexing/attachment-batch-queue";
+} from "../core/indexing/attachment-batch-queue";
 
 const LIMITS = {
   ...DEFAULT_ATTACHMENT_BATCH_LIMITS,

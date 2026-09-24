@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { InFlightRequestGate } from "../src/services/in-flight-request-gate";
+import { InFlightRequestGate } from "../core/services/in-flight-request-gate";
 
 describe("in-flight request gate", () => {
   it("reuses an active request with the same key and releases it afterward", async () => {

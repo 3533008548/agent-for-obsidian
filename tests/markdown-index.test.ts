@@ -1,9 +1,29 @@
 import { describe, expect, it } from "vitest";
-import type { TFile, Vault } from "obsidian";
-import { MarkdownKnowledgeIndex } from "../src/indexing/markdown-knowledge-index";
-import { parseMarkdownIntoChunks } from "../src/indexing/markdown-parser";
-import { searchMarkdownChunks } from "../src/indexing/markdown-search";
-import { createDefaultPermissionPolicy, PolicyEngine } from "../src/policy/policy-engine";
+import type { KnowledgeFile, KnowledgeRepository } from "../core/core/knowledge-repository";
+import { PortableMarkdownKnowledgeIndex } from "../core/indexing/portable-markdown-knowledge-index";
+import { parseMarkdownIntoChunks } from "../core/indexing/markdown-parser";
+import { searchMarkdownChunks } from "../core/indexing/markdown-search";
+import { createDefaultPermissionPolicy, PolicyEngine } from "../core/policy/policy-engine";
+
+class MemoryKnowledgeRepository implements KnowledgeRepository {
+  constructor(private readonly contents: Map<string, string>) {}
+
+  async listMarkdownFiles(): Promise<KnowledgeFile[]> {
+    return [...this.contents.keys()].map((path) => this.toFile(path));
+  }
+
+  async getMarkdownFile(path: string): Promise<KnowledgeFile | null> {
+    return this.contents.has(path) ? this.toFile(path) : null;
+  }
+
+  async readText(path: string): Promise<string> {
+    return this.contents.get(path) ?? "";
+  }
+
+  private toFile(path: string): KnowledgeFile {
+    return { path, extension: "md", mtime: 1, size: (this.contents.get(path) ?? "").length };
+  }
+}
 
 describe("Markdown parsing and search", () => {
   const chunks = parseMarkdownIntoChunks(
@@ -74,22 +94,33 @@ describe("Markdown parsing and search", () => {
     ]));
   });
 
-  it("indexes a newly created Markdown file through refreshFile", async () => {
+  it("indexes a Markdown file through refreshFile", async () => {
     const contents = new Map<string, string>([
       ["daily/LangGraph-checkpoint.md", "# Checkpoint\n\nLangGraph 状态恢复。"]
     ]);
-    const vault = {
-      getMarkdownFiles: () => [],
-      read: async (file: TFile) => contents.get(file.path) ?? ""
-    } as unknown as Vault;
-    const index = new MarkdownKnowledgeIndex(vault);
+    const index = new PortableMarkdownKnowledgeIndex(new MemoryKnowledgeRepository(contents));
     const policy = new PolicyEngine(createDefaultPermissionPolicy());
-    const file = {
-      path: "daily/LangGraph-checkpoint.md",
-      extension: "md"
-    } as TFile;
 
-    await expect(index.refreshFile(file, policy)).resolves.toBe(true);
+    await expect(index.refreshFile({
+      path: "daily/LangGraph-checkpoint.md",
+      extension: "md",
+      mtime: 1,
+      size: 0
+    }, policy)).resolves.toBe(true);
     expect(index.search("langgraph")).toHaveLength(1);
+  });
+
+  it("rebuilds from the repository and reports a summary", async () => {
+    const contents = new Map<string, string>([
+      ["daily/甲.md", "# 甲\n\n内容一。"],
+      ["daily/乙.md", "# 乙\n\n内容二。"]
+    ]);
+    const index = new PortableMarkdownKnowledgeIndex(new MemoryKnowledgeRepository(contents));
+    const policy = new PolicyEngine(createDefaultPermissionPolicy());
+
+    const summary = await index.rebuild(policy);
+
+    expect(summary.indexedFiles).toBe(2);
+    expect(index.search("内容一")[0]?.chunk.source.pathOrUrl).toBe("daily/甲.md");
   });
 });

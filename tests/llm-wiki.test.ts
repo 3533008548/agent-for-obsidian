@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractLlmWikiTopic } from "../src/wiki/llm-wiki-system";
+import { extractLlmWikiTopic } from "../core/wiki/llm-wiki-system";
 
 describe("LLM Wiki", () => {
   it("extracts a stable topic from a Wiki compilation request", () => {

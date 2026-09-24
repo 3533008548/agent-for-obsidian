@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { hashText } from "../src/domain/content-hash";
+import { hashText } from "../core/domain/content-hash";
 import {
   buildNoteRelationMessages,
   mergeManagedNoteRelations,
   parseNoteRelationPlan,
   renderNoteRelationItems
-} from "../src/integration/note-relations";
-import type { KnowledgeIntegrationSource } from "../src/integration/knowledge-system";
+} from "../core/integration/note-relations";
+import type { KnowledgeIntegrationSource } from "../core/integration/knowledge-system";
 
 const sources: KnowledgeIntegrationSource[] = [
   {

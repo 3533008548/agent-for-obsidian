@@ -3,7 +3,7 @@ import {
   createDefaultPermissionPolicy,
   normalizeVaultPath,
   PolicyEngine
-} from "../src/policy/policy-engine";
+} from "../core/policy/policy-engine";
 
 describe("PolicyEngine", () => {
   it("defaults to allowing the whole Vault", () => {

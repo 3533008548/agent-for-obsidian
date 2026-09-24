@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatPastedContent,
   parsePasteRepairSuggestion
-} from "../src/paste/paste-formatter";
+} from "../core/paste/paste-formatter";
 
 describe("paste formatter", () => {
   it("converts TSV tables locally, pads short rows, and escapes Markdown pipes", () => {

@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_TOOL_DEFINITIONS,
   getAgentToolDefinition
-} from "../src/runtime/agent-runtime";
-import { createAgentToolRegistry } from "../src/runtime/agent-tools";
+} from "../core/runtime/agent-runtime";
+import { createAgentToolRegistry } from "../core/runtime/agent-tools";
 
 describe("AgentToolRegistry", () => {
   it("requires one executor for every registered semantic tool action", () => {

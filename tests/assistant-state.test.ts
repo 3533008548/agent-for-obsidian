@@ -4,7 +4,7 @@ import {
   buildAssistantStateSkeleton,
   getAssistantStatePath,
   setAssistantFocus
-} from "../src/memory/assistant-state";
+} from "../core/memory/assistant-state";
 
 describe("Assistant state", () => {
   it("keeps a readable current focus and action trace with session provenance", () => {

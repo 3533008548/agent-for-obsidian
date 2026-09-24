@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DeepSeekVisionClient } from "../src/services/deepseek-vision-client";
+import { DeepSeekVisionClient } from "../core/services/deepseek-vision-client";
 
 describe("DeepSeekVisionClient", () => {
   it("sends a DeepSeek vision-compatible image_url block", async () => {

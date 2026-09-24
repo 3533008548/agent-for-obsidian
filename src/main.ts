@@ -1,2269 +1,992 @@
-import { Editor, MarkdownView, Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
-import { AuditTrail, type AuditEvent } from "./audit/audit-trail";
-import {
-  createManualCaptureProposal,
-  createKnowledgeSystemProposal,
-  createSourcedCaptureProposal,
-  renderCreatedKnowledgeSystemNote,
-  type AgentActionProposal,
-  type ManualCaptureAction
-} from "./actions/action-proposal";
-import {
-  VaultActionService,
-  type WritePreview,
-  type WriteResult
-} from "./actions/vault-action-service";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from "electron";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import {
   createDefaultPermissionPolicy,
-  PolicyEngine,
-  type PolicyAction,
-  type PermissionPolicy,
-  type PolicyDecision
-} from "./policy/policy-engine";
-import { DeepSeekClient } from "./services/deepseek-client";
-import { GlmClient } from "./services/glm-client";
-import { NoUsableWebResultsError, TavilyClient } from "./services/tavily-client";
-import { postJson } from "./services/api-request";
-import { InFlightRequestGate } from "./services/in-flight-request-gate";
+  PolicyEngine
+} from "../core/policy/policy-engine";
+import { NodeFileSystemKnowledgeRepository } from "../core/desktop/node-file-system-knowledge-repository";
 import {
-  getNoWebResultMessage,
-  shouldUseGeneralKnowledgeFallback,
-  type WebFallbackPolicy
-} from "./services/web-answer-policy";
-import {
-  DEFAULT_SETTINGS,
-  KnowledgeLoopSettingTab,
-  type KnowledgeLoopSettings
-} from "./settings";
-import {
-  MarkdownKnowledgeIndex,
+  PortableMarkdownKnowledgeIndex,
   type MarkdownIndexSummary
-} from "./indexing/markdown-knowledge-index";
-import { selectDiverseSearchResults, type MarkdownSearchResult } from "./indexing/markdown-search";
+} from "../core/indexing/portable-markdown-knowledge-index";
+import { DesktopAgentService } from "../core/desktop/desktop-agent-service";
+import { DesktopSessionService } from "../core/desktop/desktop-session-service";
+import { DesktopWriteService } from "../core/desktop/desktop-write-service";
+import { DesktopWikiService } from "../core/desktop/desktop-wiki-service";
+import { DesktopAttachmentService, type DesktopAttachmentState } from "../core/desktop/desktop-attachment-service";
+import { DesktopRelationService } from "../core/desktop/desktop-relation-service";
+import { DesktopAgentRuntime } from "../core/desktop/desktop-agent-runtime";
+import { DesktopKnowledgeSystemService } from "../core/desktop/desktop-knowledge-system-service";
+import { DesktopMaintenanceService } from "../core/desktop/desktop-maintenance-service";
+import { DesktopWikiVerificationService } from "../core/desktop/desktop-wiki-verification-service";
+import { detectDesktopAgentIntent } from "../core/desktop/desktop-intent-router";
+import { formatPastedContent } from "../core/paste/paste-formatter";
+import type { AgentSessionStoreState } from "../core/memory/agent-memory";
+import { readEnvValue } from "../core/services/env";
+import type { WebFallbackPolicy } from "../core/services/web-answer-policy";
 import {
-  AttachmentIndex,
-  getAttachmentMimeType,
-  type AttachmentIndexRecord,
-  type AttachmentScanSummary
-} from "./indexing/attachment-index";
-import {
-  AttachmentBatchQueue,
-  type AttachmentBatchLimits,
-  type AttachmentBatchQueueState,
-  type AttachmentBatchStatus
-} from "./indexing/attachment-batch-queue";
-import { hashArrayBuffer, hashText } from "./domain/content-hash";
-import type { SourceRef } from "./domain/source-ref";
-import {
-  renderWebAnswerCaptureContent,
-  type WebSearchResult
-} from "./services/web-search";
-import { ENV_TEMPLATE, readEnvValue } from "./services/env";
-import { AGENT_VIEW_TYPE, KnowledgeLoopAgentView } from "./views/agent-view";
-import {
-  renderKnowledgeMapContent,
-  renderKnowledgeNodeContent,
-  selectSourcesForKnowledgeMap,
-  type KnowledgeIntegrationSession,
-  type KnowledgeIntegrationSource,
-  type KnowledgeMapNode
-} from "./integration/knowledge-system";
-import {
-  compileLlmWikiTopic,
-  createLlmWikiRegistry,
-  extractLlmWikiTopic,
-  getLinkedWikiPages,
-  isLlmWikiPath,
-  markLlmWikiSourceStale,
-  searchLlmWiki,
-  type LlmWikiPageRecord,
-  type LlmWikiRegistry,
-  type LlmWikiPageDraft
-} from "./wiki/llm-wiki-system";
-import {
-  CURRENT_NOTE_SOURCE_ID,
-  renderNoteRelationItems,
-  type NoteRelationPlan
-} from "./integration/note-relations";
-import { formatPastedContent } from "./paste/paste-formatter";
-import { PasteFormatPreviewModal } from "./views/paste-format-preview-modal";
-import {
-  createGardenerSources,
-  type GardenerPlan
-} from "./gardener/knowledge-gardener";
-import {
-  createLocalKnowledgeFallbackPlan,
-  createAgentRun,
-  ensureKnowledgeOrganizationPlan,
-  ensureLlmWikiTraversalPlan,
-  type AgentRun,
-  type AgentRunPlan,
-  type AgentRunStep,
-  type AgentToolCall
-} from "./runtime/agent-runtime";
-import { AgentRunStore } from "./runtime/agent-run-store";
-import {
-  createAgentToolRegistry,
-  type AgentToolExecutionResult
-} from "./runtime/agent-tools";
-import {
-  isRuntimeBlockedError as isAgentRuntimeBlockedError,
-  LocalKnowledgeUnavailableError,
-  RuntimeToolBlockedError
-} from "./runtime/agent-runtime-errors";
-import {
-  AgentSessionStore,
-  applyProfileMemorySuggestions,
-  buildAgentMemoryContext,
-  buildAgentProfileSkeleton,
-  createAgentMemorySource,
-  getAgentProfilePath,
-  isAgentMemoryPath,
-  parseAgentSessionTranscript,
-  renderNewAgentSession,
-  renderSessionExchange,
-  renderSessionToolResult,
-  type AgentSession,
-  type AgentSessionMessage,
-  type AgentSessionStoreState
-} from "./memory/agent-memory";
+  getStandaloneWorkspaceName,
+  migrateObsidianVault,
+  previewObsidianVaultMigration
+} from "../core/desktop/obsidian-vault-migrator";
+import type {
+  DesktopSearchHit,
+  DesktopAgentResponse,
+  DesktopAgentRequestContext,
+  DesktopNoteEntry,
+  ObsidianMigrationState,
+  ProviderStatus,
+  SessionStatus,
+  WorkspaceState,
+  AgentRunView,
+  WritePreviewView
+} from "./shared/desktop-api";
 
-interface PersistedPluginData {
-  settings?: Partial<KnowledgeLoopSettings>;
-  auditEvents?: AuditEvent[];
-  attachmentRecords?: AttachmentIndexRecord[];
-  attachmentBatchQueue?: AttachmentBatchQueueState;
-  agentRuns?: AgentRun[];
-  agentSessions?: AgentSessionStoreState;
-  llmWikiRegistry?: LlmWikiRegistry;
-}
-
-type PermissionPolicyPatch = Omit<Partial<PermissionPolicy>, "enabled"> & {
-  enabled?: Partial<Record<PolicyAction, boolean>>;
+const WINDOW_OPTIONS = {
+  width: 1120,
+  height: 760,
+  minWidth: 760,
+  minHeight: 560,
+  title: "知识环",
+  backgroundColor: "#fafafa",
+  webPreferences: {
+    preload: join(__dirname, "preload.cjs"),
+    contextIsolation: true,
+    nodeIntegration: false
+  }
 };
 
-const KNOWLEDGE_INTEGRATION_SEARCH_LIMIT = 80;
+const DESKTOP_ENV_TEMPLATE = [
+  "# 知识环桌面端模型配置。此文件只保存在本机应用数据目录，请勿提交或分享。",
+  "# DeepSeek 负责文本与图片解析；Tavily 只检索网页。DeepSeek Vision 当前不支持 PDF。",
+  "DEEPSEEK_API_KEY=",
+  "DEEPSEEK_MODEL=deepseek-v4-flash",
+  "DEEPSEEK_VISION_MODEL=deepseek-v4-flash-vision-exp",
+  "TAVILY_API_KEY=",
+  "WEB_FALLBACK_POLICY=stable-only",
+  ""
+].join("\n");
 
-export interface WebSearchRun {
-  answer: string;
-  sources: WebSearchResult[];
-  mode: "web-grounded" | "deepseek-general";
-  fallbackReason?: "no-usable-web-results";
-  autoAppendedPath?: string;
-  autoAppendError?: string;
-}
+class DesktopKnowledgeWorkspace {
+  private rootPath: string | null = null;
+  private repository: NodeFileSystemKnowledgeRepository | null = null;
+  private index: PortableMarkdownKnowledgeIndex | null = null;
+  private summary: MarkdownIndexSummary | null = null;
+  private sessionService: DesktopSessionService | null = null;
+  private writeService: DesktopWriteService | null = null;
+  private wikiService: DesktopWikiService | null = null;
+  private attachmentService: DesktopAttachmentService | null = null;
+  private relationService: DesktopRelationService | null = null;
+  private wikiVerificationService: DesktopWikiVerificationService | null = null;
+  private agentRuntime: DesktopAgentRuntime | null = null;
+  private knowledgeService: DesktopKnowledgeSystemService | null = null;
+  private maintenanceService: DesktopMaintenanceService | null = null;
+  private activeNotePath: string | null = null;
+  private sessionStates: Record<string, AgentSessionStoreState> = {};
+  private didLoadSessionStates = false;
+  private readonly policy = new PolicyEngine(createDefaultPermissionPolicy());
 
-export interface ProviderKeyStatus {
-  deepSeek: boolean;
-  glm: boolean;
-  tavily: boolean;
-}
-
-export interface AttachmentBatchRunResult {
-  indexed: number;
-  failed: number;
-  pending: number;
-  stoppedReason: "completed" | "paused" | "budget-exhausted";
-  lastPath?: string;
-}
-
-type RuntimeAnswerArtifact =
-  | { kind: "vault"; query: string; content: string; sources: MarkdownSearchResult[] }
-  | { kind: "wiki"; query: string; content: string; sources: SourceRef[]; traversedPaths: string[] }
-  | { kind: "web"; query: string; content: string; sources: WebSearchResult[] };
-
-interface WikiTraversalState {
-  query: string;
-  candidates: LlmWikiPageRecord[];
-  pages: Array<{ page: LlmWikiPageRecord; content: string }>;
-}
-
-export interface AgentSessionPreview {
-  session: AgentSession;
-  preview: WritePreview;
-}
-
-export interface AgentMemoryStatus {
-  profilePath: string;
-  profileExists: boolean;
-  activeSession: AgentSession | null;
-  sessionCount: number;
-}
-
-export interface LlmWikiWritePreview {
-  kind: "llm-wiki";
-  topic: string;
-  previews: WritePreview[];
-  nextRegistry: LlmWikiRegistry;
-}
-
-export type RuntimeWritePreview = WritePreview | LlmWikiWritePreview;
-
-export function isLlmWikiWritePreview(preview: RuntimeWritePreview): preview is LlmWikiWritePreview {
-  return "kind" in preview && preview.kind === "llm-wiki";
-}
-
-export default class KnowledgeLoopAgentPlugin extends Plugin {
-  settings: KnowledgeLoopSettings = DEFAULT_SETTINGS;
-  private deepSeekApiKey = "";
-  private glmApiKey = "";
-  private tavilyApiKey = "";
-  private providerKeyStatus: ProviderKeyStatus = { deepSeek: false, glm: false, tavily: false };
-  private auditTrail = new AuditTrail();
-  private markdownIndex!: MarkdownKnowledgeIndex;
-  private attachmentIndex = new AttachmentIndex();
-  private attachmentBatchQueue = new AttachmentBatchQueue();
-  private recoveredAttachmentCount = 0;
-  private attachmentBatchRun: Promise<AttachmentBatchRunResult> | null = null;
-  private agentRunStore = new AgentRunStore();
-  private agentSessionStore = new AgentSessionStore();
-  private llmWikiRegistry = createLlmWikiRegistry();
-  private agentToolRegistry!: ReturnType<typeof createAgentToolRegistry>;
-  private runtimeArtifacts: {
-    answer?: RuntimeAnswerArtifact;
-    knowledgeMap?: KnowledgeIntegrationSession;
-    wikiTraversal?: WikiTraversalState;
-    writePreview?: RuntimeWritePreview;
-  } = {};
-  private vaultActionService!: VaultActionService;
-  private saveQueue: Promise<void> = Promise.resolve();
-  private requestGate = new InFlightRequestGate();
-
-  async onload(): Promise<void> {
-    await this.loadSettings();
-    if (this.recoveredAttachmentCount > 0) {
-      await this.savePluginData();
-      new Notice(`已恢复 ${this.recoveredAttachmentCount} 个在关闭前中断的附件任务。`);
-    }
-    await this.reloadApiKeyFromEnv();
-    this.markdownIndex = new MarkdownKnowledgeIndex(
-      this.app.vault,
-      (path) => isAgentMemoryPath(path, this.settings.permissions.agentMemoryFolder)
-    );
-    await this.markdownIndex.rebuild(this.getPolicyEngine());
-    this.vaultActionService = new VaultActionService(
-      this.app.vault,
-      () => this.getPolicyEngine(),
-      () => ({
-        inboxFolder: this.settings.permissions.inboxFolder,
-        dailyFolder: this.settings.permissions.dailyFolder,
-        knowledgeSystemFolder: this.settings.permissions.knowledgeSystemFolder,
-        agentMemoryFolder: this.settings.permissions.agentMemoryFolder
-      }),
-      (decision) => this.recordPolicyDecision(decision)
-    );
-    this.agentToolRegistry = this.createRuntimeToolRegistry();
-
-    this.registerView(
-      AGENT_VIEW_TYPE,
-      (leaf) => new KnowledgeLoopAgentView(leaf, this)
-    );
-
-    this.addRibbonIcon("brain-circuit", "Open Knowledge Loop Agent", () => {
-      void this.activateAgentView();
-    });
-
-    this.addCommand({
-      id: "open-agent-view",
-      name: "Open agent panel",
-      callback: () => void this.activateAgentView()
-    });
-
-    this.addCommand({
-      id: "test-glm-connection",
-      name: "Test GLM vision connection",
-      callback: () => void this.testGlmConnection()
-    });
-
-    this.addCommand({
-      id: "test-deepseek-connection",
-      name: "Test DeepSeek connection",
-      callback: () => void this.testDeepSeekConnection()
-    });
-
-    this.addCommand({
-      id: "paste-as-normalized-markdown",
-      name: "Paste as normalized Markdown",
-      editorCallback: (editor) => {
-        void this.formatClipboardIntoEditor(editor);
-      }
-    });
-
-    this.addCommand({
-      id: "repair-selected-formatting",
-      name: "Repair selected formatting with Agent",
-      editorCallback: (editor) => {
-        void this.repairSelectedFormatting(editor);
-      }
-    });
-
-    this.addSettingTab(new KnowledgeLoopSettingTab(this.app, this));
-
-    this.registerEvent(
-      this.app.vault.on("create", (file) => {
-        if (file instanceof TFile) {
-          void this.markdownIndex.refreshFile(file, this.getPolicyEngine());
-          this.markLlmWikiSourceStale(file.path);
-        }
-      })
-    );
-
-    this.registerEvent(
-      this.app.vault.on("modify", (file) => {
-        if (file instanceof TFile) {
-          void this.markdownIndex.refreshFile(file, this.getPolicyEngine());
-          this.markLlmWikiSourceStale(file.path);
-        }
-      })
-    );
-
-    this.registerEvent(
-      this.app.vault.on("delete", (file) => {
-        this.markdownIndex.remove(file.path);
-        this.markLlmWikiSourceStale(file.path);
-      })
-    );
-
-    this.registerEvent(
-      this.app.vault.on("rename", (file, oldPath) => {
-        if (!(file instanceof TFile)) {
-          return;
-        }
-        this.markdownIndex.remove(oldPath);
-        this.markLlmWikiSourceStale(oldPath);
-        void this.markdownIndex.refreshFile(file, this.getPolicyEngine());
-      })
-    );
-  }
-
-  async onunload(): Promise<void> {
-    this.attachmentBatchQueue.setRunning(false);
-    await this.savePluginData();
-    this.runtimeArtifacts = {};
-    this.deepSeekApiKey = "";
-    this.glmApiKey = "";
-    this.tavilyApiKey = "";
-    this.providerKeyStatus = { deepSeek: false, glm: false, tavily: false };
-    await this.app.workspace.detachLeavesOfType(AGENT_VIEW_TYPE);
-  }
-
-  async loadSettings(): Promise<void> {
-    const rawData = (await this.loadData()) as unknown;
-    const persisted: PersistedPluginData = isPersistedPluginData(rawData)
-      ? rawData
-      : { settings: isRecord(rawData) ? (rawData as Partial<KnowledgeLoopSettings>) : {} };
-    const savedSettings = persisted.settings ?? {};
-    const savedPermissions: Partial<PermissionPolicy> = savedSettings.permissions ?? {};
-
-    this.settings = {
-      ...DEFAULT_SETTINGS,
-      ...savedSettings,
-      permissions: {
-        ...createDefaultPermissionPolicy(),
-        ...savedPermissions,
-        enabled: {
-          ...createDefaultPermissionPolicy().enabled,
-          ...savedPermissions.enabled
-        }
-      }
-    };
-    if (savedSettings.requestTimeoutMs === 30_000) {
-      this.settings.requestTimeoutMs = DEFAULT_SETTINGS.requestTimeoutMs;
-    }
-    this.settings.webFallbackPolicy = normalizeWebFallbackPolicy(this.settings.webFallbackPolicy);
-    this.auditTrail = new AuditTrail(persisted.auditEvents ?? []);
-    this.attachmentIndex = new AttachmentIndex(persisted.attachmentRecords ?? []);
-    this.recoveredAttachmentCount = this.attachmentIndex.resumeInterrupted();
-    this.attachmentBatchQueue = new AttachmentBatchQueue(persisted.attachmentBatchQueue);
-    this.agentRunStore = new AgentRunStore(persisted.agentRuns ?? []);
-    this.agentSessionStore = new AgentSessionStore(persisted.agentSessions);
-    this.llmWikiRegistry = createLlmWikiRegistry(persisted.llmWikiRegistry);
-  }
-
-  async updateSettings(patch: Partial<KnowledgeLoopSettings>): Promise<void> {
-    this.settings = { ...this.settings, ...patch };
-    if (patch.permissions) {
-      this.markdownIndex?.clear();
-    }
-    await this.savePluginData();
-  }
-
-  async updatePermissionPolicy(patch: PermissionPolicyPatch): Promise<void> {
-    const current = this.settings.permissions;
-    await this.updateSettings({
-      permissions: {
-        ...current,
-        ...patch,
-        enabled: {
-          ...current.enabled,
-          ...patch.enabled
-        }
-      }
-    });
-  }
-
-  async resetPermissionPolicy(): Promise<void> {
-    await this.updateSettings({ permissions: createDefaultPermissionPolicy() });
-  }
-
-  hasDeepSeekApiKey(): boolean {
-    return Boolean(this.deepSeekApiKey.trim());
-  }
-
-  hasGlmApiKey(): boolean {
-    return Boolean(this.glmApiKey.trim());
-  }
-
-  hasTavilyApiKey(): boolean {
-    return Boolean(this.tavilyApiKey.trim());
-  }
-
-  getProviderKeyStatus(): ProviderKeyStatus {
-    return { ...this.providerKeyStatus };
-  }
-
-  getEnvFilePath(): string {
-    return `${this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`}/.env`;
-  }
-
-  async reloadApiKeyFromEnv(): Promise<ProviderKeyStatus> {
-    const envPath = this.getEnvFilePath();
-    if (!(await this.app.vault.adapter.exists(envPath))) {
-      await this.app.vault.adapter.write(envPath, ENV_TEMPLATE);
-      this.deepSeekApiKey = "";
-      this.glmApiKey = "";
-      this.tavilyApiKey = "";
-      this.providerKeyStatus = { deepSeek: false, glm: false, tavily: false };
-      return this.getProviderKeyStatus();
-    }
-
-    const contents = await this.app.vault.adapter.read(envPath);
-    this.deepSeekApiKey = readEnvValue(contents, "DEEPSEEK_API_KEY") ?? "";
-    this.glmApiKey = readEnvValue(contents, "GLM_API_KEY") ?? "";
-    this.tavilyApiKey = readEnvValue(contents, "TAVILY_API_KEY") ?? "";
-    this.providerKeyStatus = {
-      deepSeek: this.hasDeepSeekApiKey(),
-      glm: this.hasGlmApiKey(),
-      tavily: this.hasTavilyApiKey()
-    };
-    return this.getProviderKeyStatus();
-  }
-
-  async testGlmConnection(): Promise<void> {
-    if (!this.hasGlmApiKey()) {
-      new Notice("请在插件目录的 .env 文件中填写 GLM_API_KEY，然后重新加载。 ");
-      return;
-    }
-
-    new Notice("正在测试 GLM 连通性…");
+  async restore(): Promise<WorkspaceState | null> {
     try {
-      const result = await this.requestGate.run("glm-connection-test", () => this.getGlmClient().testConnection());
-      this.auditTrail.recordProviderTest("succeeded", `GLM 连通性测试成功：${result.model}`);
-      await this.savePluginData();
-      new Notice(`GLM 连接成功：${result.model}${result.requestId ? `（${result.requestId}）` : ""}`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "发生未知错误。";
-      this.auditTrail.recordProviderTest("failed", "GLM 连通性测试失败。详情请查看通知提示。");
-      await this.savePluginData();
-      new Notice(`GLM 连接失败：${message}`);
-    }
-  }
-
-  async testDeepSeekConnection(): Promise<void> {
-    if (!this.hasDeepSeekApiKey()) {
-      new Notice("请在插件目录的 .env 文件中填写 DEEPSEEK_API_KEY，然后重新加载。 ");
-      return;
-    }
-
-    new Notice("正在测试 DeepSeek 连通性…");
-    try {
-      const result = await this.requestGate.run("deepseek-connection-test", () => this.getDeepSeekClient().testConnection());
-      this.auditTrail.recordProviderTest("succeeded", `DeepSeek 连通性测试成功：${result.model}`);
-      await this.savePluginData();
-      new Notice(`DeepSeek 连接成功：${result.model}${result.requestId ? `（${result.requestId}）` : ""}`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "发生未知错误。";
-      this.auditTrail.recordProviderTest("failed", "DeepSeek 连通性测试失败。详情请查看通知提示。");
-      await this.savePluginData();
-      new Notice(`DeepSeek 连接失败：${message}`);
-    }
-  }
-
-  recordPolicyDecision(decision: PolicyDecision): void {
-    this.auditTrail.recordPolicyDecision(decision);
-    void this.savePluginData();
-  }
-
-  getRecentAuditEvents(limit = 5): AuditEvent[] {
-    return this.auditTrail.getRecent(limit);
-  }
-
-  async rebuildMarkdownIndex(): Promise<MarkdownIndexSummary> {
-    const summary = await this.markdownIndex.rebuild(this.getPolicyEngine());
-    new Notice(`Markdown 索引完成：${summary.indexedFiles} 个文件，${summary.chunkCount} 个片段。`);
-    return summary;
-  }
-
-  searchKnowledge(query: string, limit = 8): MarkdownSearchResult[] {
-    const ranked = [
-      ...this.markdownIndex.search(query, limit),
-      ...this.attachmentIndex.search(query, this.getPolicyEngine(), limit)
-    ].sort((left, right) =>
-      right.score - left.score || left.chunk.source.pathOrUrl.localeCompare(right.chunk.source.pathOrUrl)
-    );
-    return selectDiverseSearchResults(ranked, limit);
-  }
-
-  async scanAttachments(): Promise<AttachmentScanSummary> {
-    const summary = this.attachmentIndex.scan(this.app.vault.getFiles(), this.getPolicyEngine());
-    await this.savePluginData();
-    new Notice(`附件扫描完成：新增/更新队列 ${summary.queued}，未变化 ${summary.unchanged}，未授权 ${summary.blocked}。`);
-    return summary;
-  }
-
-  getAttachmentBatchStatus(): AttachmentBatchStatus {
-    return this.attachmentBatchQueue.getStatus(
-      this.attachmentIndex.pendingCount,
-      this.getAttachmentBatchLimits()
-    );
-  }
-
-  async pauseAttachmentBatch(): Promise<AttachmentBatchStatus> {
-    this.attachmentBatchQueue.pause();
-    await this.savePluginData();
-    return this.getAttachmentBatchStatus();
-  }
-
-  async resumeAttachmentBatch(): Promise<AttachmentBatchStatus> {
-    this.attachmentBatchQueue.resume();
-    await this.savePluginData();
-    return this.getAttachmentBatchStatus();
-  }
-
-  async processAttachmentBatch(): Promise<AttachmentBatchRunResult> {
-    if (this.attachmentBatchRun) {
-      return this.attachmentBatchRun;
-    }
-
-    let shared: Promise<AttachmentBatchRunResult>;
-    shared = this.runAttachmentBatch().finally(() => {
-      if (this.attachmentBatchRun === shared) {
-        this.attachmentBatchRun = null;
-      }
-    });
-    this.attachmentBatchRun = shared;
-    return shared;
-  }
-
-  async processNextAttachment(): Promise<{ path: string; kind: string; textLength: number } | null> {
-    if (!this.hasGlmApiKey()) {
-      throw new Error("请在插件目录的 .env 文件中填写 GLM_API_KEY，然后重新加载。 ");
-    }
-    const record = this.attachmentIndex.nextPending();
-    if (!record) {
-      return null;
-    }
-
-    const file = this.app.vault.getAbstractFileByPath(record.path);
-    if (!(file instanceof TFile)) {
-      this.attachmentIndex.markFailed(record.path, "附件已不存在或不是文件。");
-      await this.savePluginData();
-      throw new Error("待处理附件已不存在；索引队列已更新。 ");
-    }
-
-    const indexDecision = this.getPolicyEngine().decide({ action: "indexAttachments", targetPath: file.path });
-    const uploadDecision = this.getPolicyEngine().decide({ action: "sendToGlm", targetPath: file.path });
-    this.recordPolicyDecision(indexDecision);
-    this.recordPolicyDecision(uploadDecision);
-    if (!indexDecision.allowed || !uploadDecision.allowed) {
-      this.attachmentIndex.markFailed(file.path, "附件索引或 GLM 上传权限未获授权。");
-      await this.savePluginData();
-      throw new Error("附件索引或 GLM 上传权限未获授权。 ");
-    }
-
-    const maxBytes = record.kind === "pdf" ? 25 * 1024 * 1024 : 10 * 1024 * 1024;
-    if (file.stat.size > maxBytes) {
-      this.attachmentIndex.markFailed(file.path, `文件超过当前 ${Math.round(maxBytes / 1024 / 1024)} MB 处理上限。`);
-      await this.savePluginData();
-      throw new Error(`文件过大，当前处理上限为 ${Math.round(maxBytes / 1024 / 1024)} MB。`);
-    }
-
-    const budget = this.attachmentBatchQueue.reserveAttempt(
-      file.stat.size,
-      this.getAttachmentBatchLimits()
-    );
-    if (!budget.allowed) {
-      await this.savePluginData();
-      throw new AttachmentBatchBlockedError(budget.blockedBy ?? "budget", budget.reason ?? "附件处理暂不可用。", budget.waitMs);
-    }
-    if (!this.attachmentIndex.markProcessing(file.path)) {
-      await this.savePluginData();
-      return null;
-    }
-    await this.savePluginData();
-
-    try {
-      const binary = await this.app.vault.readBinary(file);
-      const base64 = arrayBufferToBase64(binary);
-      const result = await this.requestGate.run(`glm-attachment:${file.path}`, () => record.kind === "pdf"
-        ? this.getGlmClient().extractPdf(base64)
-        : this.getGlmClient().describeImage(base64, getAttachmentMimeType(record.kind, file.extension))
-      );
-      this.attachmentIndex.markIndexed(file.path, {
-        type: record.kind,
-        pathOrUrl: file.path,
-        locator: record.kind === "pdf" ? "document" : "image",
-        contentHash: hashArrayBuffer(binary),
-        parserVersion: result.parserVersion
-      }, result.content);
-      this.attachmentBatchQueue.markProcessed(file.path);
-      this.auditTrail.recordModelRequest("succeeded", `GLM ${record.kind === "pdf" ? "OCR" : "视觉"}解析成功。`);
-      await this.savePluginData();
-      new Notice(`附件已索引：${file.path}`);
-      return { path: file.path, kind: record.kind, textLength: result.content.length };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "未知附件解析错误。";
-      this.attachmentIndex.markFailed(file.path, message);
-      this.attachmentBatchQueue.markError(message);
-      this.auditTrail.recordModelRequest("failed", `GLM ${record.kind === "pdf" ? "OCR" : "视觉"}解析失败。`);
-      await this.savePluginData();
-      throw error;
-    }
-  }
-
-  private async runAttachmentBatch(): Promise<AttachmentBatchRunResult> {
-    if (!this.hasGlmApiKey()) {
-      throw new Error("请在插件目录的 .env 文件中填写 GLM_API_KEY，然后重新加载。 ");
-    }
-
-    let indexed = 0;
-    let failed = 0;
-    let lastPath: string | undefined;
-    let stoppedReason: AttachmentBatchRunResult["stoppedReason"] = "completed";
-    this.attachmentBatchQueue.setRunning(true);
-    await this.savePluginData();
-
-    try {
-      while (this.attachmentIndex.pendingCount > 0) {
-        if (this.attachmentBatchQueue.isPaused()) {
-          stoppedReason = "paused";
-          break;
-        }
-
-        const delayMs = this.attachmentBatchQueue.getDelayMs();
-        if (delayMs > 0) {
-          await this.waitForAttachmentSlot(delayMs);
-          continue;
-        }
-
-        try {
-          const result = await this.processNextAttachment();
-          if (!result) {
-            break;
-          }
-          indexed += 1;
-          lastPath = result.path;
-        } catch (error) {
-          if (error instanceof AttachmentBatchBlockedError) {
-            if (error.kind === "rate-limit") {
-              await this.waitForAttachmentSlot(error.waitMs ?? this.attachmentBatchQueue.getDelayMs());
-              continue;
-            }
-            stoppedReason = error.kind === "paused" ? "paused" : "budget-exhausted";
-            break;
-          }
-          failed += 1;
-        }
-      }
-    } finally {
-      this.attachmentBatchQueue.setRunning(false);
-      await this.savePluginData();
-    }
-
-    return { indexed, failed, pending: this.attachmentIndex.pendingCount, stoppedReason, lastPath };
-  }
-
-  private createRuntimeToolRegistry(): ReturnType<typeof createAgentToolRegistry> {
-    return createAgentToolRegistry({
-      "index:rebuild-markdown": async () => {
-        const summary = await this.rebuildMarkdownIndex();
-        return { summary: `已索引 ${summary.indexedFiles} 个文件和 ${summary.chunkCount} 个片段。` };
-      },
-      "index:scan-attachments": async () => {
-        const summary = await this.scanAttachments();
-        return { summary: `附件扫描完成：已入队 ${summary.queued}，未变化 ${summary.unchanged}，未授权 ${summary.blocked}。` };
-      },
-      "index:process-attachments": async () => {
-        const result = await this.processAttachmentBatch();
-        if (result.stoppedReason === "budget-exhausted" || result.stoppedReason === "paused") {
-          throw new RuntimeToolBlockedError(`附件批处理${result.stoppedReason === "paused" ? "已暂停" : "达到预算"}：已完成 ${result.indexed} 项，剩余 ${result.pending} 项。`);
-        }
-        return { summary: `附件批处理完成：成功 ${result.indexed} 项，失败 ${result.failed} 项。` };
-      },
-      "research:answer-vault": async ({ goal }) => {
-        try {
-          const answer = await this.answerFromKnowledge(goal);
-          this.runtimeArtifacts.answer = { kind: "vault", query: goal, content: answer.content, sources: answer.sources };
-          return { summary: `已生成带 ${answer.sources.length} 条本地来源的回答。`, artifact: "answer" };
-        } catch (error) {
-          const recovery = this.toEvidenceRecoveryResult(error, { tool: "research", action: "answer-vault" });
-          if (recovery) {
-            return recovery;
-          }
-          throw error;
-        }
-      },
-      "research:wiki-search": async ({ goal }) => {
-        const candidates = this.searchLlmWikiPages(goal);
-        if (!candidates.length) {
-          return this.createEvidenceRecoveryResult(
-            "当前 LLM Wiki 没有命中页面，Agent 已自动规划补证步骤。",
-            "LLM Wiki 检索为 0 条结果。不要再次安排 research:wiki-search；请改用有信息增益的补证动作，例如 research:answer-web。",
-            { tool: "research", action: "wiki-search" }
-          );
-        }
-        this.runtimeArtifacts.wikiTraversal = { query: goal, candidates, pages: [] };
-        return { summary: `LLM Wiki 搜索命中 ${candidates.length} 个页面：${candidates.map((page) => page.title).join("、")}。` };
-      },
-      "research:wiki-read": async () => {
-        const traversal = this.requireWikiTraversal();
-        const pages = await this.readLlmWikiPages(traversal.candidates.slice(0, 2));
-        if (!pages.length) {
-          return this.createEvidenceRecoveryResult(
-            "命中的 LLM Wiki 页面已不可读取，Agent 已自动规划补证步骤。",
-            "LLM Wiki 页面不可读取或已删除。不要再次安排 research:wiki-read；请改用有信息增益的补证动作，例如 research:answer-web。",
-            { tool: "research", action: "wiki-read" }
-          );
-        }
-        traversal.pages = pages;
-        return { summary: `已阅读 ${pages.length} 个 Wiki 页面：${pages.map(({ page }) => page.title).join("、")}。` };
-      },
-      "research:wiki-follow": async () => {
-        const traversal = this.requireWikiTraversal();
-        const linked = getLinkedWikiPages(this.llmWikiRegistry, traversal.pages.map(({ page }) => page));
-        const pages = await this.readLlmWikiPages(linked);
-        traversal.pages = deduplicateWikiPages([...traversal.pages, ...pages]);
-        return { summary: pages.length
-          ? `已沿 Wiki 链接继续阅读：${pages.map(({ page }) => page.title).join("、")}。`
-          : "已读页面没有可继续跟随的 Wiki 链接；将使用当前证据回答。" };
-      },
-      "research:answer-wiki": async ({ goal }) => {
-        try {
-          const answer = await this.answerFromLlmWiki(goal);
-          this.runtimeArtifacts.answer = {
-            kind: "wiki",
-            query: goal,
-            content: answer.content,
-            sources: answer.sources,
-            traversedPaths: answer.traversedPaths
-          };
-          return { summary: `已基于 ${answer.traversedPaths.length} 个 Wiki 页面生成回答。`, artifact: "answer" };
-        } catch (error) {
-          const recovery = this.toEvidenceRecoveryResult(error, { tool: "research", action: "answer-wiki" });
-          if (recovery) {
-            return recovery;
-          }
-          throw error;
-        }
-      },
-      "research:answer-web": async ({ goal }) => {
-        const answer = await this.searchWeb(goal);
-        this.runtimeArtifacts.answer = { kind: "web", query: goal, content: answer.answer, sources: answer.sources };
-        return { summary: answer.mode === "web-grounded" ? `已生成联网回答：${answer.sources.length} 条网页来源。` : "联网无可用网页结果，已生成明确标识的通用回答。", artifact: "answer" };
-      },
-      "organize:maintenance-plan": async ({ goal }) => {
-        const report = await this.analyzeKnowledgeMaintenance(goal);
-        return { summary: `知识库维护分析完成：发现 ${report.findings.length} 项问题。${report.summary}` };
-      },
-      "organize:note-relations": async () => {
-        const result = await this.prepareCurrentNoteRelations();
-        if (!result.preview) {
-          return { summary: `关联分析完成：${result.plan.summary} 未发现需要补充的高置信度关联。` };
-        }
-        this.runtimeArtifacts.writePreview = result.preview;
-        return {
-          summary: `关联分析完成：${result.plan.summary} 已生成 ${result.plan.relations.length} 条关联的写入预览。`,
-          artifact: "write-preview"
-        };
-      },
-      "organize:knowledge-map": async ({ goal }) => {
-        const session = await this.createKnowledgeMap(goal, "search-results", goal);
-        this.runtimeArtifacts.knowledgeMap = session;
-        this.runtimeArtifacts.writePreview = await this.previewKnowledgeMap(session);
-        return {
-          summary: `已生成知识地图：${session.map.nodes.length} 个节点，并已生成知识体系笔记写入预览。`,
-          artifact: "write-preview"
-        };
-      },
-      "organize:compile-wiki": async ({ goal }) => {
-        const result = await this.previewLlmWiki(goal);
-        this.runtimeArtifacts.knowledgeMap = result.session;
-        this.runtimeArtifacts.writePreview = result.preview;
-        return {
-          summary: `已${result.updating ? "更新" : "生成"} LLM Wiki：${result.session.map.nodes.length} 个概念、${result.session.sources.length} 条来源；已生成写入预览。`,
-          artifact: "write-preview"
-        };
-      },
-      "organize:knowledge-node": async () => {
-        const session = this.requireRuntimeKnowledgeMap();
-        const node = session.map.nodes.find((candidate) => candidate.priority === "high") ?? session.map.nodes[0];
-        if (!node) {
-          throw new RuntimeToolBlockedError("本次知识地图没有可展开的节点。 ");
-        }
-        const preview = await this.previewKnowledgeNode(session, node.id);
-        this.runtimeArtifacts.writePreview = preview;
-        return { summary: `已为“${node.title}”生成写入预览，仍需单独确认写入。`, artifact: "write-preview" };
-      },
-      "note:preview-inbox": async () => this.createRuntimeNotePreview("createInboxNote"),
-      "note:preview-daily": async () => this.createRuntimeNotePreview("appendDailyNote"),
-      "note:preview-knowledge-map": async () => {
-        const preview = await this.previewKnowledgeMap(this.requireRuntimeKnowledgeMap());
-        this.runtimeArtifacts.writePreview = preview;
-        return { summary: "已生成知识地图写入预览，仍需单独确认写入。", artifact: "write-preview" };
-      },
-      "editor:normalize-paste": async () => {
-        await this.formatClipboardIntoEditor(this.requireActiveEditor());
-        return { summary: "已打开规范化粘贴预览；确认后才会写入编辑器。" };
-      },
-      "editor:repair-selection": async () => {
-        await this.repairSelectedFormatting(this.requireActiveEditor());
-        return { summary: "已请求选区格式修复；请在预览中确认是否替换。" };
-      },
-      "system:diagnose": async () => ({ summary: this.describeRuntimeStatus() }),
-      "system:test-deepseek": async () => {
-        await this.testDeepSeekConnection();
-        return { summary: "已完成 DeepSeek 连通性测试；结果已写入审计记录。" };
-      },
-      "system:test-glm": async () => {
-        await this.testGlmConnection();
-        return { summary: "已完成 GLM 连通性测试；结果已写入审计记录。" };
-      }
-    });
-  }
-
-  private requireRuntimeKnowledgeMap(): KnowledgeIntegrationSession {
-    if (!this.runtimeArtifacts.knowledgeMap) {
-      throw new RuntimeToolBlockedError("此步骤需要本次运行先生成知识地图；运行重启后请重新生成。 ");
-    }
-    return this.runtimeArtifacts.knowledgeMap;
-  }
-
-  private requireWikiTraversal(): WikiTraversalState {
-    const traversal = this.runtimeArtifacts.wikiTraversal;
-    if (!traversal) {
-      throw new RuntimeToolBlockedError("此步骤需要本次运行先搜索 LLM Wiki；运行重启后请重新开始 Wiki 遍历。 ");
-    }
-    return traversal;
-  }
-
-  private searchLlmWikiPages(query: string): LlmWikiPageRecord[] {
-    return searchLlmWiki(this.llmWikiRegistry, query).map((result) => result.page);
-  }
-
-  private hasRelevantLlmWiki(query: string): boolean {
-    return searchLlmWiki(this.llmWikiRegistry, query, 1).length > 0;
-  }
-
-  private async readLlmWikiPages(records: LlmWikiPageRecord[]): Promise<Array<{ page: LlmWikiPageRecord; content: string }>> {
-    const pages: Array<{ page: LlmWikiPageRecord; content: string }> = [];
-    for (const page of records) {
-      const decision = this.getPolicyEngine().decide({ action: "readVault", targetPath: page.path });
-      this.recordPolicyDecision(decision);
-      if (!decision.allowed) {
-        continue;
-      }
-      const file = this.app.vault.getAbstractFileByPath(page.path);
-      if (file instanceof TFile) {
-        pages.push({ page, content: await this.app.vault.read(file) });
-      }
-    }
-    return pages;
-  }
-
-  private toEvidenceRecoveryResult(error: unknown, excludedCall: AgentToolCall): AgentToolExecutionResult | null {
-    if (!(error instanceof LocalKnowledgeUnavailableError)) {
-      return null;
-    }
-    return this.createEvidenceRecoveryResult(error.message, error.replanFeedback, excludedCall, error.autoContinue);
-  }
-
-  private createEvidenceRecoveryResult(
-    summary: string,
-    replanFeedback: string,
-    excludedCall: AgentToolCall,
-    autoContinue = true
-  ): AgentToolExecutionResult {
-    return {
-      summary,
-      replanFeedback,
-      replanExclusions: [excludedCall],
-      autoContinue
-    };
-  }
-
-  private async answerFromLlmWiki(question: string): Promise<{
-    content: string;
-    sources: SourceRef[];
-    traversedPaths: string[];
-  }> {
-    if (!this.hasDeepSeekApiKey()) {
-      throw new Error("请在插件目录的 .env 文件中填写 DEEPSEEK_API_KEY，然后重新加载。 ");
-    }
-    const traversal = this.requireWikiTraversal();
-    if (!traversal.pages.length) {
-      throw new LocalKnowledgeUnavailableError(
-        "本次 Wiki 遍历没有可读页面，Agent 已自动规划补证步骤。",
-        "LLM Wiki 遍历没有可读页面。不要再次安排 research:answer-wiki；请改用有信息增益的补证动作，例如 research:answer-web。"
-      );
-    }
-    const permitted = traversal.pages.filter(({ page }) => {
-      const decision = this.getPolicyEngine().decide({ action: "sendToGlm", targetPath: page.path });
-      this.recordPolicyDecision(decision);
-      return decision.allowed;
-    });
-    if (!permitted.length) {
-      throw new LocalKnowledgeUnavailableError(
-        "已读 Wiki 页面没有获准外发给模型，Agent 已自动规划补证步骤。",
-        "LLM Wiki 页面没有任何来源获准外发给模型。不要再次安排 research:answer-wiki；请改用不依赖这些页面的补证动作，例如 research:answer-web。"
-      );
-    }
-    const modelSources = permitted.map(({ page, content }, index) => ({
-      id: index + 1,
-      path: page.path,
-      locator: "llm-wiki-page",
-      content
-    }));
-    const startedAt = Date.now();
-    try {
-      const response = await this.requestGate.run(`deepseek-wiki:${question.trim()}:${modelSources.map((source) => source.path).join("|")}`, () =>
-        this.getDeepSeekClient().answerWithSources(question, modelSources, "")
-      );
-      const content = renderWikiAnswerCitations(response.content, permitted.map(({ page }) => page));
-      this.auditTrail.recordModelRequest(
-        "succeeded",
-        `DeepSeek LLM Wiki 问答${response.evidenceComplete ? "成功" : "存在证据缺口"}：${response.model}，${response.durationMs}ms，页面 ${modelSources.length} 个；总耗时 ${Date.now() - startedAt}ms。`
-      );
-      if (!response.evidenceComplete) {
-        const missingEvidence = response.missingEvidence.length ? response.missingEvidence.join("、") : "回答所需概念";
-        await this.savePluginData();
-        throw new LocalKnowledgeUnavailableError(
-          `LLM Wiki 缺少“${missingEvidence}”的直接证据，Agent 已自动规划补证步骤。`,
-          `LLM Wiki 已阅页面缺少回答所需的直接证据：${missingEvidence}。不要再次安排 research:answer-wiki；请改用有信息增益的补证动作，例如 research:answer-web。`
-        );
-      }
-      await this.appendActiveSessionEntry(renderSessionExchange(question, content));
-      await this.savePluginData();
-      return {
-        content,
-        sources: permitted.map(({ page, content }) => ({
-          type: "note",
-          pathOrUrl: page.path,
-          locator: "llm-wiki-page",
-          contentHash: hashText(content),
-          parserVersion: "llm-wiki-v2"
-        })),
-        traversedPaths: permitted.map(({ page }) => page.path)
-      };
-    } catch (error) {
-      if (error instanceof LocalKnowledgeUnavailableError) {
-        throw error;
-      }
-      this.auditTrail.recordModelRequest("failed", `DeepSeek LLM Wiki 问答失败（${Date.now() - startedAt}ms）：${formatModelRequestError(error)}`);
-      await this.savePluginData();
-      throw error;
-    }
-  }
-
-  private requireActiveEditor(): Editor {
-    const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
-    if (!editor) {
-      throw new RuntimeToolBlockedError("此步骤需要在 Obsidian 中打开一个可编辑的 Markdown 笔记。 ");
-    }
-    return editor;
-  }
-
-  private async createRuntimeNotePreview(type: ManualCaptureAction): Promise<AgentToolExecutionResult> {
-    const answer = this.runtimeArtifacts.answer;
-    if (!answer) {
-      throw new RuntimeToolBlockedError("此步骤需要本次运行先生成问答结果；运行重启后请重新获取回答。 ");
-    }
-    const preview = answer.kind === "vault"
-      ? await this.suggestCaptureFromAnswer(type, answer.content, answer.sources)
-      : answer.kind === "wiki"
-        ? await this.suggestCaptureFromSources(type, answer.content, answer.sources)
-        : answer.sources.length
-          ? await this.previewWebSearchCapture(type, answer.query, answer.content, answer.sources)
-          : null;
-    if (!preview) {
-      throw new RuntimeToolBlockedError("通用联网兜底回答没有可追溯网页来源，不能自动生成写入预览。 ");
-    }
-    this.runtimeArtifacts.writePreview = preview;
-    return { summary: `已生成${type === "createInboxNote" ? " Inbox" : " Daily"}写入预览，仍需单独确认写入。`, artifact: "write-preview" };
-  }
-
-  private describeRuntimeStatus(): string {
-    const providers = this.getProviderKeyStatus();
-    const attachments = this.getAttachmentBatchStatus();
-    return `服务：DeepSeek ${providers.deepSeek ? "已配置" : "未配置"}，GLM ${providers.glm ? "已配置" : "未配置"}，Tavily ${providers.tavily ? "已配置" : "未配置"}；附件队列待处理 ${attachments.pending}，状态 ${attachments.mode}；最近审计 ${this.getRecentAuditEvents(1)[0]?.reason ?? "暂无"}。`;
-  }
-
-  private async waitForAttachmentSlot(delayMs: number): Promise<void> {
-    let remaining = delayMs;
-    while (remaining > 0 && !this.attachmentBatchQueue.isPaused()) {
-      const duration = Math.min(250, remaining);
-      await new Promise<void>((resolve) => window.setTimeout(resolve, duration));
-      remaining -= duration;
-    }
-  }
-
-  getLatestAgentRunForActiveSession(): AgentRun | null {
-    const session = this.agentSessionStore.getActive();
-    return session ? this.agentRunStore.getLatestForSession(session.id) : null;
-  }
-
-  getRuntimeWritePreview(): RuntimeWritePreview | null {
-    return this.runtimeArtifacts.writePreview ?? null;
-  }
-
-  getAgentMemoryStatus(): AgentMemoryStatus {
-    const profilePath = getAgentProfilePath(this.settings.permissions.agentMemoryFolder);
-    return {
-      profilePath,
-      profileExists: this.app.vault.getAbstractFileByPath(profilePath) instanceof TFile,
-      activeSession: this.agentSessionStore.getActive(),
-      sessionCount: this.agentSessionStore.getAll().length
-    };
-  }
-
-  getAgentSessions(): AgentSession[] {
-    return this.agentSessionStore.getAll();
-  }
-
-  async getActiveSessionTranscript(): Promise<AgentSessionMessage[]> {
-    const session = this.agentSessionStore.getActive();
-    if (!session) {
-      return [];
-    }
-    const file = this.app.vault.getAbstractFileByPath(session.path);
-    if (!(file instanceof TFile)) {
-      this.agentSessionStore.remove(session.id);
-      await this.savePluginData();
-      return [];
-    }
-    const decision = this.getPolicyEngine().decide({ action: "readVault", targetPath: session.path });
-    this.recordPolicyDecision(decision);
-    if (!decision.allowed) {
-      throw new Error(`会话读取被权限策略拒绝：${decision.reason}`);
-    }
-    return parseAgentSessionTranscript(await this.app.vault.read(file));
-  }
-
-  async activateAgentSession(sessionId: string): Promise<AgentSession> {
-    const session = this.agentSessionStore.get(sessionId);
-    if (!session) {
-      throw new Error("找不到指定的 Agent 会话。 ");
-    }
-    if (!(this.app.vault.getAbstractFileByPath(session.path) instanceof TFile)) {
-      this.agentSessionStore.remove(session.id);
-      await this.savePluginData();
-      throw new Error("会话笔记已被删除，无法继续。 ");
-    }
-    const active = this.agentSessionStore.activate(session);
-    await this.savePluginData();
-    return active;
-  }
-
-  async previewAgentSession(title: string): Promise<AgentSessionPreview> {
-    const session = this.agentSessionStore.create(title, this.settings.permissions.agentMemoryFolder);
-    const content = renderNewAgentSession(session);
-    const preview = await this.previewAction({
-      type: "createAgentSession",
-      title: session.title,
-      sessionPath: session.path,
-      content,
-      sources: [createAgentMemorySource(session.path, content, "session-created")]
-    });
-    return { session, preview };
-  }
-
-  async confirmAgentSession(prepared: AgentSessionPreview): Promise<AgentSession> {
-    if (
-      prepared.preview.proposal.type !== "createAgentSession" ||
-      prepared.preview.targetPath !== prepared.session.path
-    ) {
-      throw new Error("会话预览与目标不一致；请重新创建会话。 ");
-    }
-    const result = await this.applyWritePreview(prepared.preview);
-    if (result.targetPath !== prepared.session.path) {
-      throw new Error("会话目标在确认前发生变化；请重新创建会话。 ");
-    }
-    const session = this.agentSessionStore.activate(prepared.session);
-    await this.savePluginData();
-    return session;
-  }
-
-  async closeActiveAgentSession(): Promise<AgentSession | null> {
-    await this.appendActiveSessionEntry(renderSessionToolResult("会话", "用户结束了当前会话。"));
-    const session = this.agentSessionStore.closeActive();
-    if (session) {
-      await this.savePluginData();
-    }
-    return session;
-  }
-
-  async openAgentMemoryNote(path: string): Promise<void> {
-    const file = this.app.vault.getAbstractFileByPath(path);
-    if (!(file instanceof TFile)) {
-      throw new Error("Agent 记忆笔记不存在或已被删除。 ");
-    }
-    await this.app.workspace.openLinkText(path, "", false);
-  }
-
-  async previewAgentProfile(): Promise<WritePreview> {
-    const profilePath = getAgentProfilePath(this.settings.permissions.agentMemoryFolder);
-    if (this.app.vault.getAbstractFileByPath(profilePath)) {
-      throw new Error("用户画像已存在；请直接打开并编辑，或从当前会话生成更新预览。 ");
-    }
-    const content = buildAgentProfileSkeleton();
-    return this.previewAction({
-      type: "updateAgentProfile",
-      content,
-      sources: [createAgentMemorySource(profilePath, content, "profile-created")]
-    });
-  }
-
-  async previewProfileMemoryUpdate(): Promise<WritePreview> {
-    if (!this.hasDeepSeekApiKey()) {
-      throw new Error("请在插件目录的 .env 文件中填写 DEEPSEEK_API_KEY，然后重新加载。 ");
-    }
-    const session = this.agentSessionStore.getActive();
-    if (!session) {
-      throw new Error("请先创建或切换到一个 Agent 会话。 ");
-    }
-    const sessionContent = await this.readMemoryForModel(session.path, "当前会话");
-    if (!sessionContent.trim()) {
-      throw new Error("当前会话没有可用于更新用户画像的内容。 ");
-    }
-    const profilePath = getAgentProfilePath(this.settings.permissions.agentMemoryFolder);
-    const profileContent = await this.readMemoryForModel(profilePath, "用户画像", true);
-    try {
-      const suggestions = await this.requestGate.run(`agent-profile:${session.id}:${session.updatedAt}`, () =>
-        this.getDeepSeekClient().suggestProfileMemory(profileContent, sessionContent)
-      );
-      if (!suggestions.length) {
-        throw new Error("当前会话没有适合加入用户画像的稳定信息。 ");
-      }
-      const content = applyProfileMemorySuggestions(profileContent, suggestions, session.path);
-      const preview = await this.previewAction({
-        type: "updateAgentProfile",
-        content,
-        sources: [createAgentMemorySource(session.path, sessionContent, "profile-suggestion")]
-      });
-      this.auditTrail.recordModelRequest("succeeded", `DeepSeek 用户画像建议成功：${suggestions.length} 项。`);
-      await this.savePluginData();
-      return preview;
-    } catch (error) {
-      this.auditTrail.recordModelRequest("failed", "DeepSeek 用户画像建议失败。详情请查看通知提示。");
-      await this.savePluginData();
-      throw error;
-    }
-  }
-
-  async startAgentRun(goal: string): Promise<AgentRun> {
-    if (!this.hasDeepSeekApiKey()) {
-      throw new Error("请在插件目录的 .env 文件中填写 DEEPSEEK_API_KEY，然后重新加载。 ");
-    }
-    const normalizedGoal = goal.trim();
-    if (!normalizedGoal) {
-      throw new Error("请输入 Agent 运行目标。 ");
-    }
-    try {
-      const memoryContext = await this.buildModelMemoryContext();
-      const modelPlan = await this.requestGate.run(`agent-runtime-plan:${normalizedGoal}`, () =>
-        this.getDeepSeekClient().planAgentRun(normalizedGoal, memoryContext)
-      );
-      const plan = ensureLlmWikiTraversalPlan(
-        normalizedGoal,
-        ensureKnowledgeOrganizationPlan(normalizedGoal, modelPlan),
-        this.hasRelevantLlmWiki(normalizedGoal)
-      );
-      this.runtimeArtifacts = {};
-      const run = this.agentRunStore.add(createAgentRun(
-        normalizedGoal,
-        plan,
-        new Date(),
-        this.agentSessionStore.getActive()?.id
-      ));
-      await this.appendActiveSessionEntry(renderSessionExchange(
-        normalizedGoal,
-        `已生成 Agent 运行计划：${plan.summary}\n\n${plan.steps.map((step, index) => `${index + 1}. ${step.title}：${step.reason}`).join("\n")}`
-      ));
-      this.auditTrail.recordAgentRun("succeeded", run.id, `Agent 运行计划已生成：${run.steps.length} 个有限步骤。`);
-      await this.savePluginData();
-      return run;
-    } catch (error) {
-      this.auditTrail.recordAgentRun("failed", "agent-plan", "Agent 运行计划生成失败。详情请查看通知提示。");
-      await this.savePluginData();
-      throw error;
-    }
-  }
-
-  async replanAgentRun(
-    runId: string,
-    replanFeedback = "",
-    excludedCalls: AgentToolCall[] = []
-  ): Promise<AgentRun> {
-    if (!this.hasDeepSeekApiKey()) {
-      throw new Error("请在插件目录的 .env 文件中填写 DEEPSEEK_API_KEY，然后重新加载。 ");
-    }
-    const run = this.agentRunStore.get(runId);
-    if (!run || run.status === "cancelled" || (run.status === "completed" && !replanFeedback.trim())) {
-      throw new Error("该 Agent 运行不存在或已经结束。 ");
-    }
-    if (run.replanCount >= 1) {
-      throw new Error("每次 Agent 运行最多重新规划一次；请新建运行继续。 ");
-    }
-    const shouldUseWebFallback = this.hasTavilyApiKey() && excludedCalls.some(isEvidenceCollectionCall);
-    const plan = shouldUseWebFallback
-      ? createLocalKnowledgeFallbackPlan(run.goal)
-      : ensureLlmWikiTraversalPlan(
-        run.goal,
-        ensureKnowledgeOrganizationPlan(run.goal, await this.requestAgentReplan(runId, run.replanCount, run.goal, replanFeedback)),
-        this.hasRelevantLlmWiki(run.goal) && !excludedCalls.some(isLlmWikiEvidenceCall)
-      );
-    if (excludedCalls.some((excluded) => plan.steps.some((step) => step.tool === excluded.tool && step.action === excluded.action))) {
-      throw new Error("替代计划仍重复安排了已知无结果的工具动作；已拒绝该计划。请发送新的目标继续。 ");
-    }
-    const updated = this.agentRunStore.replaceIncompleteSteps(runId, plan);
-    if (!updated) {
-      throw new Error("该 Agent 运行正在执行，暂时不能重新规划。 ");
-    }
-    const replanLabel = replanFeedback.trim() ? "Agent 自动调整计划" : "Agent 重新规划";
-    this.auditTrail.recordAgentRun("succeeded", runId, `${replanLabel}：${plan.steps.length} 个步骤。`);
-    await this.appendActiveSessionEntry(renderSessionToolResult(replanLabel, `${plan.summary}\n${plan.steps.map((step, index) => `${index + 1}. ${step.title}`).join("\n")}`));
-    await this.savePluginData();
-    return updated;
-  }
-
-  private async requestAgentReplan(
-    runId: string,
-    replanCount: number,
-    goal: string,
-    replanFeedback: string
-  ): Promise<AgentRunPlan> {
-    const memoryContext = await this.buildModelMemoryContext();
-    return this.requestGate.run(`agent-runtime-replan:${runId}:${replanCount}`, () =>
-      this.getDeepSeekClient().planAgentRun(goal, memoryContext, replanFeedback)
-    );
-  }
-
-  async executeAgentRunStep(runId: string, stepId: string, confirmed = false): Promise<AgentRun> {
-    const run = this.agentRunStore.get(runId);
-    const step = run?.steps.find((candidate) => candidate.id === stepId);
-    if (!run || !step) {
-      throw new Error("Agent 运行或步骤不存在。 ");
-    }
-    if (step.requiresConfirmation && !confirmed) {
-      throw new Error("该步骤会调用模型、处理附件或打开笔记，需要用户确认。 ");
-    }
-    const started = this.agentRunStore.startStep(runId, stepId);
-    if (!started) {
-      throw new Error("该步骤当前不可执行。 ");
-    }
-    await this.savePluginData();
-
-    try {
-      this.runtimeArtifacts.writePreview = undefined;
-      const result = await this.agentToolRegistry.execute({
-        goal: started.run.goal,
-        run: started.run,
-        step: started.step
-      });
-      const resultSummary = result.summary;
-      const updated = this.agentRunStore.finishStep(runId, stepId, "completed", resultSummary);
-      if (!updated) {
-        throw new Error("无法更新 Agent 步骤状态。 ");
-      }
-      this.auditTrail.recordAgentRun("succeeded", runId, `步骤完成：${step.tool}。${resultSummary}`);
-      await this.appendActiveSessionEntry(renderSessionToolResult(step.title, resultSummary));
-      await this.savePluginData();
-      if (result.replanFeedback && updated.replanCount < 1) {
-        try {
-          const replanned = await this.replanAgentRun(runId, result.replanFeedback, result.replanExclusions);
-          return result.autoContinue ? this.continueEvidenceCompletion(replanned) : replanned;
-        } catch (replanError) {
-          const replanMessage = replanError instanceof Error ? replanError.message : "未知错误。";
-          this.auditTrail.recordAgentRun("failed", runId, `Agent 自动调整计划失败：${replanMessage}`);
-          await this.appendActiveSessionEntry(renderSessionToolResult("Agent 自动调整计划", `失败：${replanMessage}`));
-          await this.savePluginData();
-        }
-      }
-      return updated;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "未知 Agent 工具错误。";
-      const status = isRuntimeBlockedError(error) ? "blocked" : "failed";
-      const updated = this.agentRunStore.finishStep(runId, stepId, status, message);
-      this.auditTrail.recordAgentRun("failed", runId, `步骤${status === "blocked" ? "被阻止" : "失败"}：${step.tool}。${message}`);
-      await this.appendActiveSessionEntry(renderSessionToolResult(step.title, `${status === "blocked" ? "被阻止" : "失败"}：${message}`));
-      await this.savePluginData();
-      if (!updated) {
-        throw new Error("无法更新 Agent 步骤状态。 ");
-      }
-      return updated;
-    }
-  }
-
-  async retryAgentRunStep(runId: string, stepId: string): Promise<AgentRun> {
-    const updated = this.agentRunStore.retryStep(runId, stepId);
-    if (!updated) {
-      throw new Error("该步骤当前不能重试。 ");
-    }
-    await this.savePluginData();
-    return updated;
-  }
-
-  async skipAgentRunStep(runId: string, stepId: string): Promise<AgentRun> {
-    const updated = this.agentRunStore.skipStep(runId, stepId);
-    if (!updated) {
-      throw new Error("该步骤当前不能跳过。 ");
-    }
-    this.auditTrail.recordAgentRun("succeeded", runId, "用户跳过了 Agent 步骤。 ");
-    await this.savePluginData();
-    return updated;
-  }
-
-  async cancelAgentRun(runId: string): Promise<AgentRun> {
-    const updated = this.agentRunStore.cancel(runId);
-    if (!updated) {
-      throw new Error("运行中或已完成的 Agent 任务不能取消。 ");
-    }
-    this.auditTrail.recordAgentRun("succeeded", runId, "Agent 运行已取消。 ");
-    await this.savePluginData();
-    return updated;
-  }
-
-  private async analyzeKnowledgeMaintenance(goal: string): Promise<GardenerPlan> {
-    if (!this.hasDeepSeekApiKey()) {
-      throw new Error("请在插件目录的 .env 文件中填写 DEEPSEEK_API_KEY，然后重新加载。 ");
-    }
-    const normalizedGoal = goal.trim();
-    if (!normalizedGoal) {
-      throw new Error("请输入知识库维护目标。 ");
-    }
-    // The maintenance loop intentionally works on editable Markdown knowledge.
-    // Attachments already feed that knowledge through their own indexing workflow.
-    const candidates = this.markdownIndex.search(normalizedGoal, 16);
-    const sources = createGardenerSources(candidates.filter((candidate) => {
-      const decision = this.getPolicyEngine().decide({
-        action: "sendToGlm",
-        targetPath: candidate.chunk.source.pathOrUrl
-      });
-      this.recordPolicyDecision(decision);
-      return decision.allowed;
-    }));
-    if (sources.length < 2) {
-      throw new Error("没有找到至少两条可发送给模型的相关本地来源。请先重建索引或换一个更具体的目标。 ");
-    }
-
-    try {
-      const memoryContext = await this.buildModelMemoryContext();
-      const plan = await this.requestGate.run(`knowledge-gardener:${normalizedGoal}`, () =>
-        this.getDeepSeekClient().planKnowledgeMaintenance(normalizedGoal, sources, memoryContext)
-      );
-      const findings = plan.findings.map((finding, index) => {
-        const links = finding.sourceIds
-          .map((id) => sources.find((source) => source.id === id))
-          .filter((source): source is NonNullable<typeof source> => Boolean(source))
-          .map((source) => `[[${source.source.pathOrUrl}]]`)
-          .join("、");
-        return `${index + 1}. ${finding.title}：${finding.detail}${links ? `（${links}）` : ""}`;
-      }).join("\n");
-      this.auditTrail.recordModelRequest("succeeded", `DeepSeek 知识库维护分析成功：${sources.length} 个来源片段。`);
-      await this.appendActiveSessionEntry(renderSessionExchange(
-        normalizedGoal,
-        `知识库维护分析：${plan.summary}\n\n${findings || "未发现明确的重叠、冲突、缺口或过时内容。"}`
-      ));
-      await this.savePluginData();
-      return plan;
-    } catch (error) {
-      this.auditTrail.recordModelRequest("failed", "DeepSeek 知识库维护分析失败。详情请查看通知提示。");
-      await this.savePluginData();
-      throw error;
-    }
-  }
-
-  async formatClipboardIntoEditor(editor: Editor): Promise<void> {
-    try {
-      const clipboard = await navigator.clipboard.read();
-      const htmlItem = clipboard.find((item) => item.types.includes("text/html"));
-      const textItem = clipboard.find((item) => item.types.includes("text/plain"));
-      const html = htmlItem ? await (await htmlItem.getType("text/html")).text() : undefined;
-      const text = textItem ? await (await textItem.getType("text/plain")).text() : "";
-      if (!text && !html) {
-        throw new Error("剪贴板中没有可转换的文本或 HTML 内容。 ");
-      }
-      const result = formatPastedContent({ text, html });
-      new PasteFormatPreviewModal(this.app, editor, result, "粘贴格式预览").open();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "无法读取剪贴板内容。";
-      new Notice(`粘贴格式化失败：${message}`);
-    }
-  }
-
-  async repairSelectedFormatting(editor: Editor): Promise<void> {
-    const selected = editor.getSelection();
-    if (!selected.trim()) {
-      new Notice("请先选中需要修复的表格或富文本。 ");
-      return;
-    }
-    if (!this.hasDeepSeekApiKey()) {
-      new Notice("请在插件目录的 .env 文件中填写 DEEPSEEK_API_KEY，然后重新加载。 ");
-      return;
-    }
-    const file = this.app.workspace.getActiveFile();
-    if (!(file instanceof TFile)) {
-      new Notice("请在一个 Vault 内的 Markdown 笔记中执行格式修复。 ");
-      return;
-    }
-    const decision = this.getPolicyEngine().decide({ action: "sendToGlm", targetPath: file.path });
-    this.recordPolicyDecision(decision);
-    if (!decision.allowed) {
-      new Notice(`格式修复被权限策略拒绝：${decision.reason}`);
-      return;
-    }
-
-    try {
-      const suggestion = await this.requestGate.run(`paste-repair:${file.path}:${selected}`, () =>
-        this.getDeepSeekClient().repairPasteFormatting(selected)
-      );
-      const result = {
-        markdown: suggestion.markdown,
-        recommendedOutput: "markdown" as const,
-        report: {
-          kind: "rich-text" as const,
-          repairedCellCount: 0,
-          warnings: suggestion.warnings
-        }
-      };
-      this.auditTrail.recordModelRequest("succeeded", "DeepSeek 选中内容格式修复成功。 ");
-      await this.savePluginData();
-      new PasteFormatPreviewModal(this.app, editor, result, "Agent 格式修复预览").open();
-    } catch (error) {
-      this.auditTrail.recordModelRequest("failed", "DeepSeek 选中内容格式修复失败。 ");
-      await this.savePluginData();
-      const message = error instanceof Error ? error.message : "未知错误。";
-      new Notice(`格式修复失败：${message}`);
-    }
-  }
-
-  async createKnowledgeMap(
-    topic: string,
-    scope: "current-note" | "search-results" | "folder",
-    value: string,
-    sourceFilter?: (path: string) => boolean,
-    compilerConstraints: string[] = []
-  ): Promise<KnowledgeIntegrationSession> {
-    if (!this.hasDeepSeekApiKey()) {
-      throw new Error("请在插件目录的 .env 文件中填写 DEEPSEEK_API_KEY，然后重新加载。 ");
-    }
-    const normalizedTopic = topic.trim();
-    if (!normalizedTopic) {
-      throw new Error("请先输入知识体系主题。 ");
-    }
-
-    const { sources, scopeLabel } = await this.collectKnowledgeIntegrationSources(scope, value, sourceFilter);
-    if (!sources.length) {
-      throw new Error("当前范围没有可发送给模型的已授权笔记片段。 ");
-    }
-    const mapSources = selectSourcesForKnowledgeMap(sources);
-    const map = await this.requestGate.run(`knowledge-map:${scope}:${value.trim()}:${normalizedTopic}`, () =>
-      this.getDeepSeekClient().createKnowledgeMap(normalizedTopic, mapSources, compilerConstraints)
-    );
-    const session: KnowledgeIntegrationSession = {
-      id: `knowledge-map-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      topic: normalizedTopic,
-      scopeLabel,
-      createdAt: new Date().toISOString(),
-      sources: mapSources,
-      map
-    };
-    this.auditTrail.recordModelRequest("succeeded", `DeepSeek 知识地图生成成功：${mapSources.length} 个来源片段。`);
-    await this.savePluginData();
-    return session;
-  }
-
-  async previewKnowledgeMap(session: KnowledgeIntegrationSession): Promise<WritePreview> {
-    const proposal = createKnowledgeSystemProposal(
-      `${session.topic}-知识地图`,
-      renderKnowledgeMapContent(session.topic, session.map, session.scopeLabel, session.createdAt),
-      session.sources.map((source) => source.source)
-    );
-    return this.previewAction(proposal);
-  }
-
-  async previewLlmWiki(goal: string): Promise<{
-    session: KnowledgeIntegrationSession;
-    preview: LlmWikiWritePreview;
-    updating: boolean;
-  }> {
-    const topic = extractLlmWikiTopic(goal);
-    const wikiFolder = `${this.settings.permissions.knowledgeSystemFolder.replace(/\\/g, "/").replace(/\/+$/u, "")}/LLM Wiki/`;
-    const compilerConstraints = this.llmWikiRegistry.errorBook
-      .filter((error) => error.status === "open")
-      .map((error) => error.rule);
-    const session = await this.createKnowledgeMap(topic, "search-results", topic, (path) => !path.startsWith(wikiFolder), compilerConstraints);
-    const compilation = compileLlmWikiTopic(session, this.llmWikiRegistry, this.settings.permissions.knowledgeSystemFolder);
-    const previews = await Promise.all(compilation.pages.map((page) => this.previewLlmWikiPage(page)));
-    return {
-      session,
-      preview: { kind: "llm-wiki", topic: session.topic, previews, nextRegistry: compilation.nextRegistry },
-      updating: previews.some((preview) => preview.existedBefore)
-    };
-  }
-
-  private async previewLlmWikiPage(page: LlmWikiPageDraft): Promise<WritePreview> {
-    const proposal = createKnowledgeSystemProposal(page.title, page.content, page.sources, page.relativePath);
-    const targetPath = `${this.settings.permissions.knowledgeSystemFolder}/${page.relativePath}`;
-    const existing = this.app.vault.getAbstractFileByPath(targetPath);
-    return existing instanceof TFile
-      ? this.previewAction({
-        type: "modifyExistingNote",
-        notePath: targetPath,
-        content: renderCreatedKnowledgeSystemNote(proposal, new Date()),
-        sources: page.sources,
-        updateMode: "replace"
-      })
-      : this.previewAction(proposal);
-  }
-
-  async previewKnowledgeNode(
-    session: KnowledgeIntegrationSession,
-    nodeId: string
-  ): Promise<WritePreview> {
-    if (!this.hasDeepSeekApiKey()) {
-      throw new Error("请在插件目录的 .env 文件中填写 DEEPSEEK_API_KEY，然后重新加载。 ");
-    }
-    const node = session.map.nodes.find((candidate) => candidate.id === nodeId);
-    if (!node) {
-      throw new Error("找不到指定的知识节点。 ");
-    }
-    const nodeSources = session.sources.filter((source) => node.sourceIds.includes(source.id));
-    if (!nodeSources.length) {
-      throw new Error("该知识节点没有已授权来源。 ");
-    }
-    const draft = await this.requestGate.run(`knowledge-node:${session.id}:${node.id}`, () =>
-      this.getDeepSeekClient().composeKnowledgeNode(session.topic, node, nodeSources)
-    );
-    const proposal = createKnowledgeSystemProposal(
-      node.title,
-      renderKnowledgeNodeContent(draft),
-      nodeSources.filter((source) => draft.sourceIds.includes(source.id)).map((source) => source.source)
-    );
-    const preview = await this.previewAction(proposal);
-    this.auditTrail.recordModelRequest("succeeded", `DeepSeek 知识节点草稿生成成功：${node.title}`);
-    await this.savePluginData();
-    return preview;
-  }
-
-  private async prepareCurrentNoteRelations(): Promise<{
-    currentPath: string;
-    plan: NoteRelationPlan;
-    preview: WritePreview | null;
-  }> {
-    if (!this.hasDeepSeekApiKey()) {
-      throw new Error("请在插件目录的 .env 文件中填写 DEEPSEEK_API_KEY，然后重新加载。 ");
-    }
-    const file = this.app.workspace.getActiveFile();
-    if (!(file instanceof TFile) || file.extension !== "md") {
-      throw new RuntimeToolBlockedError("请先打开一篇 Markdown 笔记，再补全它的关联。 ");
-    }
-    const readDecision = this.getPolicyEngine().decide({ action: "readVault", targetPath: file.path });
-    this.recordPolicyDecision(readDecision);
-    if (!readDecision.allowed) {
-      throw new RuntimeToolBlockedError(`无法读取当前笔记：${readDecision.reason}`);
-    }
-    const currentUploadDecision = this.getPolicyEngine().decide({ action: "sendToGlm", targetPath: file.path });
-    this.recordPolicyDecision(currentUploadDecision);
-    if (!currentUploadDecision.allowed) {
-      throw new RuntimeToolBlockedError(`当前笔记不能发送给模型：${currentUploadDecision.reason}`);
-    }
-
-    if (!this.markdownIndex.has(file.path)) {
-      await this.markdownIndex.refreshFile(file, this.getPolicyEngine());
-    }
-    const currentChunks = this.markdownIndex.getForPath(file.path);
-    if (!currentChunks.length) {
-      throw new RuntimeToolBlockedError("当前笔记没有可用于关联分析的索引内容；请先重建 Markdown 索引。 ");
-    }
-    const currentContent = await this.app.vault.read(file);
-    const existingLinks = new Set([...extractWikiLinkTargets(currentContent)].map((target) =>
-      this.app.metadataCache.getFirstLinkpathDest(target, file.path)?.path ?? target
-    ));
-    const currentSource: KnowledgeIntegrationSource = {
-      id: CURRENT_NOTE_SOURCE_ID,
-      source: currentChunks[0].source,
-      title: file.basename,
-      content: currentChunks.slice(0, 6).map((chunk) => chunk.content).join("\n").slice(0, 6_000)
-    };
-    const query = `${file.basename} ${currentSource.content}`.slice(0, 1_200);
-    const sources: KnowledgeIntegrationSource[] = [currentSource];
-    const selectedPaths = new Set<string>([file.path]);
-    for (const candidate of this.markdownIndex.search(query, 36)) {
-      const source = candidate.chunk.source;
-      const normalizedPath = normalizeLinkedNotePath(source.pathOrUrl);
-      if (selectedPaths.has(source.pathOrUrl) || existingLinks.has(source.pathOrUrl) || existingLinks.has(normalizedPath)) {
-        continue;
-      }
-      const decision = this.getPolicyEngine().decide({ action: "sendToGlm", targetPath: source.pathOrUrl });
-      this.recordPolicyDecision(decision);
-      if (!decision.allowed) {
-        continue;
-      }
-      selectedPaths.add(source.pathOrUrl);
-      sources.push({
-        id: `S${sources.length}`,
-        source,
-        title: candidate.chunk.heading ?? source.pathOrUrl.split("/").pop()?.replace(/\.md$/iu, "") ?? source.pathOrUrl,
-        content: candidate.chunk.content
-      });
-      if (sources.length >= 13) {
-        break;
-      }
-    }
-    if (sources.length < 2) {
-      throw new RuntimeToolBlockedError("没有找到未链接且可发送给模型的候选笔记；请先重建索引或换一篇内容更完整的笔记。 ");
-    }
-
-    try {
-      const plan = await this.requestGate.run(`note-relations:${file.path}:${file.stat.mtime}`, () =>
-        this.getDeepSeekClient().proposeNoteRelations(sources)
-      );
-      const preview = plan.relations.length
-        ? await this.previewAction({
-          type: "modifyExistingNote",
-          notePath: file.path,
-          content: renderNoteRelationItems(plan.relations, sources),
-          sources: sources
-            .filter((source) => plan.relations.some((relation) => relation.sourceIds.includes(source.id)))
-            .map((source) => source.source)
-        })
-        : null;
-      this.auditTrail.recordModelRequest("succeeded", `DeepSeek 笔记关联分析成功：${file.path}，${plan.relations.length} 条关联。`);
-      await this.savePluginData();
-      return { currentPath: file.path, plan, preview };
-    } catch (error) {
-      this.auditTrail.recordModelRequest("failed", `DeepSeek 笔记关联分析失败：${file.path}。`);
-      await this.savePluginData();
-      throw error;
-    }
-  }
-
-  async answerFromKnowledge(question: string): Promise<{
-    content: string;
-    sources: MarkdownSearchResult[];
-  }> {
-    if (!this.hasDeepSeekApiKey()) {
-      throw new Error("请在插件目录的 .env 文件中填写 DEEPSEEK_API_KEY，然后重新加载。 ");
-    }
-
-    const candidates = this.searchKnowledge(question);
-    if (!candidates.length) {
-      throw new LocalKnowledgeUnavailableError(
-        "本地知识库没有找到相关来源，已请求 Agent 改用替代计划。",
-        "本地知识库检索为 0 条结果。不要再次安排 research:answer-vault；请根据用户目标选择其他有信息增益的动作，例如在需要时安排联网研究。"
-      );
-    }
-
-    const permittedSources = candidates.filter((candidate) => {
-      const decision = this.getPolicyEngine().decide({
-        action: "sendToGlm",
-        targetPath: candidate.chunk.source.pathOrUrl
-      });
-      this.recordPolicyDecision(decision);
-      return decision.allowed;
-    });
-
-    if (!permittedSources.length) {
-      throw new LocalKnowledgeUnavailableError(
-        "检索到本地内容，但没有来源获准发送给模型，已请求 Agent 改用替代计划。",
-        "本地检索虽有命中，但没有任何来源获准外发给模型。不要再次安排 research:answer-vault；请根据用户目标选择不依赖这些来源的替代动作。"
-      );
-    }
-
-    const startedAt = Date.now();
-    try {
-      const memoryContext = await this.buildModelMemoryContext();
-      const modelSources = permittedSources.map((result, index) => ({
-        id: index + 1,
-        path: result.chunk.source.pathOrUrl,
-        locator: result.chunk.source.locator,
-        content: result.chunk.content
-      }));
-      const response = await this.requestGate.run(`deepseek-knowledge:${question.trim()}`, () =>
-        this.getDeepSeekClient().answerWithSources(
-          question,
-          modelSources,
-          memoryContext
-        )
-      );
-      this.auditTrail.recordModelRequest(
-        "succeeded",
-        `DeepSeek 来源问答${response.evidenceComplete ? "成功" : "发现证据缺口"}：${response.model}，${response.durationMs}ms，输入 ${response.inputCharacters} 字符，来源 ${response.sourceCount ?? modelSources.length} 个；总耗时 ${Date.now() - startedAt}ms。`
-      );
-      if (!response.evidenceComplete) {
-        const missingEvidence = response.missingEvidence.length ? response.missingEvidence.join("、") : "回答所需概念";
-        await this.savePluginData();
-        throw new LocalKnowledgeUnavailableError(
-          `本地资料缺少“${missingEvidence}”的直接证据，Agent 已自动规划补证步骤。`,
-          `本地知识库检索缺少回答所需的直接证据：${missingEvidence}。不要再次安排 research:answer-vault；请改用有信息增益的补证动作，例如 research:answer-web。`,
-          true
-        );
-      }
-      await this.appendActiveSessionEntry(renderSessionExchange(question, response.content));
-      await this.savePluginData();
-      return {
-        content: response.content,
-        sources: permittedSources.slice(0, response.sourceCount ?? modelSources.length)
-      };
-    } catch (error) {
-      if (error instanceof LocalKnowledgeUnavailableError) {
-        throw error;
-      }
-      this.auditTrail.recordModelRequest("failed", `DeepSeek 来源问答失败（${Date.now() - startedAt}ms）：${formatModelRequestError(error)}`);
-      await this.savePluginData();
-      throw error;
-    }
-  }
-
-  private async continueEvidenceCompletion(run: AgentRun): Promise<AgentRun> {
-    const next = run.steps.find((step) => step.status === "pending");
-    if (
-      !next ||
-      next.tool !== "research" ||
-      next.action !== "answer-web" ||
-      !this.hasTavilyApiKey()
-    ) {
-      return run;
-    }
-    return this.executeAgentRunStep(run.id, next.id, true);
-  }
-
-  async searchWeb(query: string): Promise<WebSearchRun> {
-    if (!this.hasTavilyApiKey() || !this.hasDeepSeekApiKey()) {
-      throw new Error("请在插件目录的 .env 文件中同时填写 TAVILY_API_KEY 和 DEEPSEEK_API_KEY，然后重新加载。 ");
-    }
-
-    const decision = this.getPolicyEngine().decide({ action: "webSearch" });
-    this.recordPolicyDecision(decision);
-    if (!decision.allowed) {
-      throw new Error(`联网搜索被权限策略拒绝：${decision.reason}`);
-    }
-
-    const startedAt = Date.now();
-    try {
-      const memoryContext = await this.buildModelMemoryContext();
-      const response = await this.requestGate.run(`tavily-web:${query.trim()}`, async () => {
-        try {
-          const search = await this.getTavilyClient().search(query, this.settings.webSearchResultLimit);
-          const answer = await this.getDeepSeekClient().answerFromWeb(query, search.sources, memoryContext);
-          return { ...answer, sources: search.sources, mode: "web-grounded" as const, tavilyRequestId: search.requestId };
-        } catch (error) {
-          if (!(error instanceof NoUsableWebResultsError)) {
-            throw error;
-          }
-          if (!shouldUseGeneralKnowledgeFallback(this.settings.webFallbackPolicy, query)) {
-            throw new Error(getNoWebResultMessage(this.settings.webFallbackPolicy, query));
-          }
-
-          const answer = await this.getDeepSeekClient().answerFromGeneralKnowledge(query, memoryContext);
-          return {
-            ...answer,
-            sources: [],
-            mode: "deepseek-general" as const,
-            fallbackReason: "no-usable-web-results" as const
-          };
-        }
-      });
-      const diagnostics = `DeepSeek ${response.model}，${response.durationMs}ms，输入 ${response.inputCharacters} 字符，来源 ${response.sourceCount ?? 0} 个；总耗时 ${Date.now() - startedAt}ms。`;
-      this.auditTrail.recordModelRequest("succeeded", response.mode === "web-grounded"
-        ? `Tavily 检索 + DeepSeek 联网问答成功：${response.model}${response.tavilyRequestId ? `（Tavily ${response.tavilyRequestId}）` : ""}；${diagnostics}`
-        : `Tavily 未返回可用网页结果，已降级为 DeepSeek 通用回答：${response.model}；${diagnostics}`
-      );
-
-      const run: WebSearchRun = {
-        answer: response.content,
-        sources: response.sources,
-        mode: response.mode,
-        ...(response.mode === "deepseek-general" ? { fallbackReason: response.fallbackReason } : {})
-      };
-      await this.appendActiveSessionEntry(renderSessionExchange(
-        query,
-        `${response.mode === "web-grounded" ? "联网回答" : "通用回答（未获得可用网页来源）"}\n\n${response.content}`
-      ));
-      if (response.mode === "web-grounded" && this.settings.autoAppendWebSearchToDaily) {
-        try {
-          const preview = await this.previewWebSearchCapture(
-            "appendDailyNote",
-            query,
-            response.content,
-            response.sources
-          );
-          const result = await this.applyWritePreview(preview);
-          run.autoAppendedPath = result.targetPath;
-        } catch (error) {
-          run.autoAppendError = error instanceof Error ? error.message : "联网结果自动追加失败。";
-        }
-      }
-
-      await this.savePluginData();
-      return run;
-    } catch (error) {
-      this.auditTrail.recordModelRequest("failed", `Tavily 检索或 DeepSeek 联网问答失败（${Date.now() - startedAt}ms）：${formatModelRequestError(error)}`);
-      await this.savePluginData();
-      throw error;
-    }
-  }
-
-  async previewManualCapture(
-    type: ManualCaptureAction,
-    subject: string,
-    content: string
-  ): Promise<WritePreview> {
-    return this.previewAction(createManualCaptureProposal(type, subject, content));
-  }
-
-  async previewWebSearchCapture(
-    type: ManualCaptureAction,
-    query: string,
-    answer: string,
-    sources: WebSearchResult[]
-  ): Promise<WritePreview> {
-    if (!sources.length) {
-      throw new Error("通用回答没有联网来源，不能作为联网结果写入。请使用手动笔记沉淀保存。 ");
-    }
-    const proposal = createSourcedCaptureProposal(
-      type,
-      query,
-      renderWebAnswerCaptureContent(query, answer),
-      sources.map((source) => source.source)
-    );
-    return this.previewAction(proposal);
-  }
-
-  async suggestCaptureFromAnswer(
-    type: ManualCaptureAction,
-    answer: string,
-    sources: MarkdownSearchResult[]
-  ): Promise<WritePreview> {
-    return this.suggestCaptureFromSources(type, answer, sources.map((source) => source.chunk.source));
-  }
-
-  private async suggestCaptureFromSources(
-    type: ManualCaptureAction,
-    answer: string,
-    sources: SourceRef[]
-  ): Promise<WritePreview> {
-    if (!this.hasDeepSeekApiKey()) {
-      throw new Error("请在插件目录的 .env 文件中填写 DEEPSEEK_API_KEY，然后重新加载。 ");
-    }
-    if (!sources.length) {
-      throw new Error("没有可追溯来源，不能生成自动笔记提案。 ");
-    }
-
-    const stillPermitted = sources.every((source) => {
-      const decision = this.getPolicyEngine().decide({
-        action: "sendToGlm",
-        targetPath: source.pathOrUrl
-      });
-      this.recordPolicyDecision(decision);
-      return decision.allowed;
-    });
-    if (!stillPermitted) {
-      throw new Error("来源的模型外发权限已变更；请重新检索后再生成笔记提案。 ");
-    }
-
-    try {
-      const suggestion = await this.requestGate.run(`deepseek-capture:${type}:${answer.trim()}`, () =>
-        this.getDeepSeekClient().suggestCapture(answer, type)
-      );
-      const proposal = createSourcedCaptureProposal(
-        type,
-        suggestion.subject,
-        suggestion.content,
-        sources
-      );
-      const preview = await this.previewAction(proposal);
-      this.auditTrail.recordModelRequest("succeeded", `DeepSeek 笔记提案成功：${this.settings.deepSeekModel}`);
-      await this.savePluginData();
-      return preview;
-    } catch (error) {
-      this.auditTrail.recordModelRequest("failed", "DeepSeek 笔记提案失败。详情请查看通知提示。");
-      await this.savePluginData();
-      throw error;
-    }
-  }
-
-  async applyWritePreview(preview: WritePreview): Promise<WriteResult> {
-    try {
-      const result = await this.vaultActionService.apply(preview);
-      const writeMessage = preview.proposal.type === "modifyExistingNote"
-        ? "已更新关联笔记。"
-        : result.created ? "已创建新笔记。" : "已追加到现有笔记。";
-      this.auditTrail.recordVaultWrite(
-        preview.proposal.type,
-        result.targetPath,
-        "succeeded",
-        writeMessage
-      );
-      if (
-        this.runtimeArtifacts.writePreview &&
-        !isLlmWikiWritePreview(this.runtimeArtifacts.writePreview) &&
-        this.runtimeArtifacts.writePreview.targetPath === preview.targetPath &&
-        this.runtimeArtifacts.writePreview.afterContent === preview.afterContent
-      ) {
-        this.runtimeArtifacts.writePreview = undefined;
-      }
-      await this.savePluginData();
-      new Notice(`${preview.proposal.type === "modifyExistingNote" ? "已更新" : result.created ? "已创建" : "已追加"}：${result.targetPath}`);
-      return result;
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : "未知错误。";
-      this.auditTrail.recordVaultWrite(preview.proposal.type, preview.targetPath, "failed", "Vault 写入失败。");
-      await this.savePluginData();
-      throw new Error(reason);
-    }
-  }
-
-  async applyLlmWikiWritePreview(preview: LlmWikiWritePreview): Promise<WriteResult[]> {
-    const results: WriteResult[] = [];
-    try {
-      for (const pagePreview of preview.previews) {
-        const result = await this.vaultActionService.apply(pagePreview);
-        results.push(result);
-        this.auditTrail.recordVaultWrite(
-          pagePreview.proposal.type,
-          result.targetPath,
-          "succeeded",
-          pagePreview.proposal.type === "modifyExistingNote" ? "已更新 LLM Wiki 页面。" : "已创建 LLM Wiki 页面。"
-        );
-      }
-      this.llmWikiRegistry = preview.nextRegistry;
-      if (this.runtimeArtifacts.writePreview === preview) {
-        this.runtimeArtifacts.writePreview = undefined;
-      }
-      await this.savePluginData();
-      new Notice(`已写入 LLM Wiki：${results.length} 个页面。`);
-      return results;
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : "未知错误。";
-      this.auditTrail.recordVaultWrite("createKnowledgeSystemNote", `LLM Wiki/${preview.topic}`, "failed", "LLM Wiki 批量写入失败。请重新生成预览以同步页面。 ");
-      await this.savePluginData();
-      throw new Error(reason);
-    }
-  }
-
-  private async activateAgentView(): Promise<void> {
-    const { workspace } = this.app;
-    let leaf: WorkspaceLeaf | null = workspace.getLeavesOfType(AGENT_VIEW_TYPE)[0] ?? null;
-
-    if (!leaf) {
-      leaf = workspace.getRightLeaf(false);
-      await leaf?.setViewState({ type: AGENT_VIEW_TYPE, active: true });
-    }
-
-    if (leaf) {
-      await workspace.revealLeaf(leaf);
-    }
-  }
-
-  private async savePluginData(): Promise<void> {
-    this.saveQueue = this.saveQueue
-      .catch(() => undefined)
-      .then(() => this.saveData({
-      settings: this.settings,
-      auditEvents: this.auditTrail.toJSON(),
-      attachmentRecords: this.attachmentIndex.toJSON(),
-      attachmentBatchQueue: this.attachmentBatchQueue.toJSON(),
-      agentRuns: this.agentRunStore.toJSON(),
-      agentSessions: this.agentSessionStore.toJSON(),
-      llmWikiRegistry: this.llmWikiRegistry
-      }));
-    await this.saveQueue;
-  }
-
-  private markLlmWikiSourceStale(path: string): void {
-    if (isLlmWikiPath(path, this.settings.permissions.knowledgeSystemFolder)) {
-      return;
-    }
-    const updated = markLlmWikiSourceStale(this.llmWikiRegistry, path);
-    if (updated === this.llmWikiRegistry) {
-      return;
-    }
-    this.llmWikiRegistry = updated;
-    void this.savePluginData();
-  }
-
-  private getPolicyEngine(): PolicyEngine {
-    return new PolicyEngine(this.settings.permissions);
-  }
-
-  private getGlmClient(): GlmClient {
-    return new GlmClient({
-      apiKey: this.glmApiKey,
-      model: this.settings.glmModel,
-      slowResponseMs: this.settings.requestTimeoutMs,
-      postJson,
-      onSlowResponse: () => this.notifySlowProviderResponse("GLM")
-    });
-  }
-
-  private getAttachmentBatchLimits(): AttachmentBatchLimits {
-    return {
-      dailyRequestLimit: this.settings.attachmentDailyRequestLimit,
-      dailyInputBytesLimit: this.settings.attachmentDailyInputMbLimit * 1024 * 1024,
-      requestIntervalMs: this.settings.attachmentRequestIntervalMs
-    };
-  }
-
-  private getDeepSeekClient(): DeepSeekClient {
-    return new DeepSeekClient({
-      apiKey: this.deepSeekApiKey,
-      model: this.settings.deepSeekModel,
-      slowResponseMs: this.settings.requestTimeoutMs,
-      postJson,
-      onSlowResponse: () => this.notifySlowProviderResponse("DeepSeek")
-    });
-  }
-
-  private getTavilyClient(): TavilyClient {
-    return new TavilyClient({
-      apiKey: this.tavilyApiKey,
-      slowResponseMs: this.settings.requestTimeoutMs,
-      postJson,
-      onSlowResponse: () => this.notifySlowProviderResponse("Tavily")
-    });
-  }
-
-  private notifySlowProviderResponse(providerName: string): void {
-    new Notice(`${providerName} 响应较慢，仍在处理中，请勿重复提交。`);
-  }
-
-  private async collectKnowledgeIntegrationSources(
-    scope: "current-note" | "search-results" | "folder",
-    value: string,
-    sourceFilter?: (path: string) => boolean
-  ): Promise<{ sources: KnowledgeIntegrationSource[]; scopeLabel: string }> {
-    const trimmedValue = value.trim();
-    let candidates: Array<{ chunk: MarkdownSearchResult["chunk"] }>;
-    let scopeLabel: string;
-
-    if (scope === "current-note") {
-      const file = this.app.workspace.getActiveFile();
-      if (!(file instanceof TFile) || file.extension !== "md") {
-        throw new Error("请先打开一篇 Markdown 笔记，再使用当前笔记作为整合范围。 ");
-      }
-      candidates = this.markdownIndex.getForPath(file.path).map((chunk) => ({ chunk }));
-      scopeLabel = `当前笔记：${file.path}`;
-    } else if (scope === "search-results") {
-      if (!trimmedValue) {
-        throw new Error("请输入用于选择整合资料的搜索关键词。 ");
-      }
-      candidates = this.searchKnowledge(trimmedValue, KNOWLEDGE_INTEGRATION_SEARCH_LIMIT);
-      scopeLabel = `搜索结果：${trimmedValue}`;
-    } else {
-      const folder = trimmedValue.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
-      if (!folder) {
-        throw new Error("请输入 Vault 内的资料文件夹路径。 ");
-      }
-      candidates = this.markdownIndex.getInFolder(folder).map((chunk) => ({ chunk }));
-      scopeLabel = `文件夹：${folder}`;
-    }
-
-    const sources: KnowledgeIntegrationSource[] = [];
-    const seen = new Set<string>();
-    for (const candidate of candidates) {
-      const source = candidate.chunk.source;
-      const decision = this.getPolicyEngine().decide({ action: "sendToGlm", targetPath: source.pathOrUrl });
-      this.recordPolicyDecision(decision);
-      const key = scope === "search-results"
-        ? source.pathOrUrl
-        : `${source.pathOrUrl}:${source.locator}:${source.contentHash}`;
-      if (!decision.allowed || (sourceFilter && !sourceFilter(source.pathOrUrl)) || seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
-      sources.push({
-        id: `S${sources.length + 1}`,
-        source,
-        title: candidate.chunk.heading ?? source.pathOrUrl.split("/").pop() ?? source.pathOrUrl,
-        content: candidate.chunk.content
-      });
-    }
-    return { sources, scopeLabel };
-  }
-
-  private async previewAction(proposal: AgentActionProposal): Promise<WritePreview> {
-    return this.vaultActionService.preview(proposal);
-  }
-
-  private async buildModelMemoryContext(): Promise<string> {
-    const profilePath = getAgentProfilePath(this.settings.permissions.agentMemoryFolder);
-    const profileContent = await this.readOptionalMemoryForModel(profilePath, "用户画像");
-    const activeSession = this.agentSessionStore.getActive();
-    const sessionContent = activeSession
-      ? await this.readOptionalMemoryForModel(activeSession.path, "当前会话")
-      : "";
-    return buildAgentMemoryContext(profileContent, sessionContent).content;
-  }
-
-  private async readOptionalMemoryForModel(path: string, label: string): Promise<string> {
-    try {
-      return await this.readMemoryForModel(path, label, true);
+      const raw = await readFile(getWorkspaceStatePath(), "utf8");
+      const saved = JSON.parse(raw) as { rootPath?: unknown };
+      return typeof saved.rootPath === "string" ? this.open(saved.rootPath) : null;
     } catch {
-      return "";
+      return null;
     }
   }
 
-  private async readMemoryForModel(path: string, label: string, allowMissing = false): Promise<string> {
-    const file = this.app.vault.getAbstractFileByPath(path);
-    if (!(file instanceof TFile)) {
-      if (allowMissing) {
-        return "";
+  async choose(): Promise<WorkspaceState | null> {
+    const result = await dialog.showOpenDialog({
+      title: "选择知识库目录",
+      properties: ["openDirectory", "createDirectory"]
+    });
+    return result.canceled || !result.filePaths[0] ? null : this.open(result.filePaths[0]);
+  }
+
+  async migrateFromObsidian(): Promise<ObsidianMigrationState | null> {
+    const sourceResult = await dialog.showOpenDialog({
+      title: "选择原始 Obsidian 知识库",
+      buttonLabel: "选择此知识库",
+      properties: ["openDirectory"]
+    });
+    const sourcePath = sourceResult.filePaths[0];
+    if (sourceResult.canceled || !sourcePath) {
+      return null;
+    }
+
+    const preview = await previewObsidianVaultMigration(sourcePath);
+    const confirmation = await dialog.showMessageBox({
+      type: "question",
+      buttons: ["继续迁移", "取消"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "确认迁移 Obsidian 知识库",
+      message: "将复制 " + preview.noteCount + " 篇笔记和 " + preview.attachmentCount + " 个附件。",
+      detail: "会保留原目录与链接；不会复制 .obsidian 配置、Git 元数据或插件密钥。原始知识库不会被修改。"
+    });
+    if (confirmation.response !== 0) {
+      return null;
+    }
+
+    const destinationResult = await dialog.showOpenDialog({
+      title: "选择迁移后知识库的存放位置",
+      buttonLabel: "存放到此处",
+      properties: ["openDirectory", "createDirectory"]
+    });
+    const parentDirectory = destinationResult.filePaths[0];
+    if (destinationResult.canceled || !parentDirectory) {
+      return null;
+    }
+
+    const migration = await migrateObsidianVault(
+      sourcePath,
+      join(parentDirectory, getStandaloneWorkspaceName(sourcePath))
+    );
+    return {
+      workspace: await this.open(migration.destinationPath),
+      noteCount: migration.noteCount,
+      attachmentCount: migration.attachmentCount,
+      totalFiles: migration.totalFiles
+    };
+  }
+
+  async getState(): Promise<WorkspaceState | null> {
+    return this.rootPath && this.summary ? this.toState() : null;
+  }
+
+  async search(query: string): Promise<DesktopSearchHit[]> {
+    if (!this.index) {
+      throw new Error("请先选择本地知识库目录。");
+    }
+    return this.index.search(query.trim(), 8).map((result) => ({
+      sourcePath: result.chunk.source.pathOrUrl,
+      heading: result.chunk.heading,
+      excerpt: result.excerpt,
+      score: result.score
+    }));
+  }
+
+  async listNotes(): Promise<DesktopNoteEntry[]> {
+    if (!this.repository) {
+      throw new Error("请先选择或迁移本地知识库。");
+    }
+    return (await this.repository.listMarkdownFiles())
+      .filter((file) => !isInternalWorkspacePath(file.path))
+      .map((file) => ({
+        path: file.path,
+        title: basename(file.path).replace(/\.md$/i, "")
+      }));
+  }
+
+  async answer(question: string, context: DesktopAgentRequestContext = {}): Promise<DesktopAgentResponse> {
+    if (!this.index) {
+      throw new Error("请先选择或迁移本地知识库。");
+    }
+    const route = detectDesktopAgentIntent({ question, activeNotePath: context.activeNotePath });
+    if (route.intent !== "answer") {
+      const response = await this.executeIntent(route.intent, route.subject, route.notePath, route.sessionTitle);
+      if (route.intent !== "close-session" && this.sessionService) {
+        await this.sessionService.appendActionExchange(question, response.content, formatIntentAction(route.intent));
+        await this.persistSessionState();
       }
-      throw new Error(`${label}笔记不存在或已被删除。 `);
+      return response;
     }
-    const readDecision = this.getPolicyEngine().decide({ action: "readVault", targetPath: path });
-    this.recordPolicyDecision(readDecision);
-    if (!readDecision.allowed) {
-      throw new Error(`${label}读取被权限策略拒绝：${readDecision.reason}`);
+    const memoryContext = this.sessionService
+      ? (await this.sessionService.getMemoryContext()).content
+      : "";
+    const agent = new DesktopAgentService(this.index, {
+      ...(await readDesktopAgentConfiguration()),
+      memoryContext,
+      attachmentSearch: this.attachmentService?.search.bind(this.attachmentService)
+    });
+    const answer = await agent.answer(question);
+    if (this.sessionService) {
+      await this.sessionService.appendExchange(question, answer.content);
+      await this.persistSessionState();
     }
-    const sendDecision = this.getPolicyEngine().decide({ action: "sendToGlm", targetPath: path });
-    this.recordPolicyDecision(sendDecision);
-    if (!sendDecision.allowed) {
-      throw new Error(`${label}不能发送给模型：${sendDecision.reason}`);
-    }
-    return this.app.vault.read(file);
+    return { ...answer, intent: "answer" };
   }
 
-  private async appendActiveSessionEntry(entry: string): Promise<void> {
-    const session = this.agentSessionStore.getActive();
-    if (!session || !entry.trim()) {
+  private async executeIntent(
+    intent: Exclude<ReturnType<typeof detectDesktopAgentIntent>["intent"], "answer">,
+    subject?: string,
+    notePath?: string,
+    sessionTitle?: string
+  ): Promise<DesktopAgentResponse> {
+    switch (intent) {
+      case "start-session": {
+        const session = await this.createSession(sessionTitle ?? "新会话");
+        return actionResponse(intent, `已开始会话「${session.title ?? "新会话"}」，后续问答会自动追加到同一份笔记。`, { sessionStatus: session });
+      }
+      case "close-session": {
+        const session = await this.closeSession();
+        return actionResponse(intent, "已结束当前会话。", { sessionStatus: session });
+      }
+      case "open-profile": {
+        if (!this.sessionService) {
+          throw new Error("请先选择或迁移本地知识库。");
+        }
+        const profilePath = await this.sessionService.ensureProfile();
+        return actionResponse(intent, "已准备用户画像，可在预览中直接编辑长期偏好、背景和目标。", { profilePath });
+      }
+      case "remember-profile": {
+        if (!subject) {
+          return actionResponse(intent, "请在“记住”后说明要保存的稳定信息，例如“记住我偏好简洁的中文回答”。");
+        }
+        if (!this.sessionService) {
+          throw new Error("请先选择或迁移本地知识库。");
+        }
+        const result = await this.sessionService.rememberProfile(subject);
+        return actionResponse(intent, result.changed ? `已记入用户画像：${subject}` : "这条信息已存在于用户画像中。", { profilePath: result.path });
+      }
+      case "forget-profile": {
+        if (!subject) {
+          return actionResponse(intent, "请说明要忘记的画像内容，例如“忘记我偏好详细回答”。");
+        }
+        if (!this.sessionService) {
+          throw new Error("请先选择或迁移本地知识库。");
+        }
+        const result = await this.sessionService.forgetProfile(subject);
+        return actionResponse(intent, result.removedCount
+          ? `已从用户画像移除 ${result.removedCount} 条与“${subject}”匹配的记忆。`
+          : "用户画像中没有找到匹配的已确认记忆。", { profilePath: result.path });
+      }
+      case "open-assistant-state": {
+        if (!this.sessionService) {
+          throw new Error("请先选择或迁移本地知识库。");
+        }
+        const assistantStatePath = await this.sessionService.ensureAssistantState();
+        return actionResponse(intent, "已打开助手状态：这里记录当前关注与最近已执行的 Agent 动作。", { assistantStatePath });
+      }
+      case "set-current-focus": {
+        if (!subject) {
+          return actionResponse(intent, "请在“设为当前重点”后说明需要持续跟进的事项。");
+        }
+        if (!this.sessionService) {
+          throw new Error("请先选择或迁移本地知识库。");
+        }
+        const assistantStatePath = await this.sessionService.setCurrentFocus(subject);
+        return actionResponse(intent, `已将当前重点设为：${subject}`, { assistantStatePath });
+      }
+      case "compile-wiki": {
+        if (!subject) {
+          return actionResponse(intent, "请说明要编译的 Wiki 主题，例如“编译 LangGraph LLM Wiki”。");
+        }
+        const result = await this.compileWiki(subject);
+        return actionResponse(intent, `已编译 LLM Wiki「${result.topic}」：使用 ${result.sourceCount} 条本地资料，写入 ${result.pageCount} 个页面。`);
+      }
+      case "expand-wiki": {
+        if (!subject) {
+          return actionResponse(intent, "请说明要补全的 Wiki 主题，例如“补全 LangGraph LLM Wiki”。");
+        }
+        const result = await this.compileWiki(subject, "expand");
+        return actionResponse(intent, [
+          `已补全 LLM Wiki「${result.topic}」：使用 ${result.sourceCount} 条本地资料，写入 ${result.pageCount} 个页面。`,
+          `本轮新增覆盖 ${result.coverage.added} 条，变更/新片段 ${result.coverage.changed} 条，复用上下文 ${result.coverage.reused} 条；仍有 ${result.coverage.remainingCandidates} 篇候选资料待覆盖。`,
+          result.sourceHealth.missing || result.sourceHealth.changed || result.sourceHealth.unverified
+            ? `历史来源检查：已变化 ${result.sourceHealth.changed} 个，已删除 ${result.sourceHealth.missing} 个，不可核验 ${result.sourceHealth.unverified} 个；这些内容仍需核验。`
+            : "历史来源检查：当前依赖来源均可本地复核。"
+        ].join("\n"));
+      }
+      case "inspect-wiki-sources": {
+        if (!subject) {
+          return actionResponse(intent, "请说明要检查来源的 Wiki 主题，例如“检查 LangGraph LLM Wiki 来源”。");
+        }
+        const result = await this.inspectWikiSources(subject);
+        return actionResponse(intent, [
+          `LLM Wiki「${result.topic}」的本地来源检查完成：有效 ${result.sourceHealth.active} 个，已变化 ${result.sourceHealth.changed} 个，已删除 ${result.sourceHealth.missing} 个，当前不可核验 ${result.sourceHealth.unverified} 个。`,
+          result.sourceHealth.missing || result.sourceHealth.changed || result.sourceHealth.unverified
+            ? "这些来源不会被当作确定事实依据；需要时可再执行“联网核验 … LLM Wiki”。"
+            : "当前本地来源与已编译版本一致。"
+        ].join("\n"));
+      }
+      case "process-images": {
+        const scan = await this.scanAttachments();
+        const result = await this.processAttachments();
+        return actionResponse(intent, `图片解析完成：发现 ${scan.queued} 张待处理图片，成功解析 ${result.indexed} 张，失败 ${result.failed} 张，剩余 ${result.pending} 张。${scan.unsupportedPdfCount ? `已跳过 ${scan.unsupportedPdfCount} 份 PDF（DeepSeek Vision 暂不支持 PDF）。` : ""}`);
+      }
+      case "format-clipboard": {
+        const result = this.formatClipboard();
+        return actionResponse(intent, result.changed
+          ? `已将剪贴板整理为 Markdown（${result.quality.kind}），现在可以直接粘贴；修复 ${result.quality.repairedCellCount} 个单元格。${result.quality.warnings.length ? " " + result.quality.warnings.join(" ") : ""}`
+          : "剪贴板内容无需调整。");
+      }
+      case "complete-relations": {
+        if (!notePath) {
+          return actionResponse(intent, "请先在目录中打开目标笔记，或在消息中写明相对路径，例如“补全 [[后端/LangGraph.md]] 的关联”。");
+        }
+        const result = await this.completeRelations(notePath);
+        return actionResponse(intent, result.relationCount
+          ? `已为「${result.path}」补充 ${result.relationCount} 条关联：${result.summary}`
+          : `关联分析完成：${result.summary}`);
+      }
+      case "verify-wiki": {
+        if (!subject) {
+          return actionResponse(intent, "请说明要联网核验的 Wiki 主题，例如“联网核验 LangGraph LLM Wiki”。");
+        }
+        const report = await this.verifyWiki(subject);
+        return actionResponse(intent, report.summary, { wikiVerification: report });
+      }
+    }
+  }
+
+  async saveAnswer(
+    action: "createInboxNote" | "appendDailyNote",
+    subject: string,
+    content: string,
+    sources: DesktopAgentResponse["sources"]
+  ): Promise<{ targetPath: string; created: boolean }> {
+    if (!this.writeService) {
+      throw new Error("请先选择或迁移本地知识库。 ");
+    }
+    const preview = await this.writeService.previewAnswer(action, subject, content, sources);
+    return this.writeService.apply(preview);
+  }
+
+  private async compileWiki(topic: string, mode: "compile" | "expand" = "compile"): Promise<{
+    topic: string;
+    pageCount: number;
+    sourceCount: number;
+    updatedCount: number;
+    paths: string[];
+    coverage: { added: number; changed: number; reused: number; remainingCandidates: number };
+    sourceHealth: { active: number; changed: number; missing: number; unverified: number };
+  }> {
+    if (!this.repository || !this.index) {
+      throw new Error("请先选择或迁移本地知识库。 ");
+    }
+    const configuration = await readDesktopAgentConfiguration();
+    this.wikiService = new DesktopWikiService(this.repository, this.index, this.policy, configuration);
+    const result = await this.wikiService.compile(topic, mode);
+    this.summary = await this.index.rebuild(this.policy);
+    return result;
+  }
+
+  private async inspectWikiSources(topic: string) {
+    if (!this.repository || !this.index) {
+      throw new Error("请先选择或迁移本地知识库。 ");
+    }
+    const configuration = await readDesktopAgentConfiguration();
+    this.wikiService = new DesktopWikiService(this.repository, this.index, this.policy, configuration);
+    return this.wikiService.inspectSources(topic);
+  }
+
+  private async scanAttachments(): Promise<{ queued: number; unchanged: number; blocked: number; removed: number; unsupportedPdfCount: number }> {
+    if (!this.attachmentService || !this.rootPath) {
+      throw new Error("请先选择或迁移本地知识库。 ");
+    }
+    const result = await this.attachmentService.scan();
+    await this.persistAttachmentState();
+    return result;
+  }
+
+  private async processAttachments(): Promise<{ indexed: number; failed: number; pending: number }> {
+    if (!this.attachmentService || !this.rootPath) {
+      throw new Error("请先选择或迁移本地知识库。 ");
+    }
+    const result = await this.attachmentService.processAll();
+    await this.persistAttachmentState();
+    return result;
+  }
+
+  private formatClipboard(): { changed: boolean; text: string; quality: { kind: string; repairedCellCount: number; warnings: string[] } } {
+    const before = clipboard.readText();
+    const result = formatPastedContent({ text: before, html: clipboard.readHTML() });
+    clipboard.writeText(result.markdown);
+    return { changed: result.markdown !== before, text: result.markdown, quality: result.report };
+  }
+
+  private async completeRelations(path: string): Promise<{ path: string; summary: string; relationCount: number }> {
+    if (!this.repository || !this.index) {
+      throw new Error("请先选择或迁移本地知识库。 ");
+    }
+    const configuration = await readDesktopAgentConfiguration();
+    this.relationService = new DesktopRelationService(this.repository, this.index, this.policy, configuration);
+    const preview = await this.relationService.preview(path);
+    const result = await this.relationService.apply(preview);
+    this.summary = await this.index.rebuild(this.policy);
+    return result;
+  }
+
+  private async verifyWiki(question: string) {
+    if (!this.repository) {
+      throw new Error("请先选择或迁移本地知识库。 ");
+    }
+    this.wikiVerificationService = new DesktopWikiVerificationService(
+      this.repository,
+      this.policy,
+      await readDesktopAgentConfiguration()
+    );
+    return this.wikiVerificationService.verify(question);
+  }
+
+  async createWikiUpdatePreview(id: string) {
+    if (!this.wikiVerificationService) {
+      throw new Error("请先完成一次 Wiki 联网核验。 ");
+    }
+    return this.wikiVerificationService.createUpdatePreview(id);
+  }
+
+  private getSessionStatus(): SessionStatus {
+    const active = this.sessionService?.activeSession;
+    return active
+      ? { active: true, title: active.title, path: active.path }
+      : { active: false };
+  }
+
+  private async createSession(title: string): Promise<SessionStatus> {
+    if (!this.sessionService) {
+      throw new Error("请先选择或迁移本地知识库。");
+    }
+    await this.sessionService.createSession(title);
+    await this.persistSessionState();
+    return this.getSessionStatus();
+  }
+
+  private async closeSession(): Promise<SessionStatus> {
+    if (this.sessionService?.activeSession) {
+      await this.sessionService.appendActionExchange("结束当前会话", "已结束当前会话。", "结束会话");
+    }
+    this.sessionService?.closeSession();
+    await this.persistSessionState();
+    return this.getSessionStatus();
+  }
+
+  async previewSource(path: string) {
+    if (!this.repository) {
+      throw new Error("当前没有已打开的知识库。");
+    }
+    const file = await this.findMarkdownSource(path);
+    if (!file) {
+      throw new Error("来源笔记已不存在或不再是 Markdown 文件。");
+    }
+    return {
+      path: file.path,
+      title: basename(file.path).replace(/\.md$/i, ""),
+      content: await this.repository.readText(file.path)
+    };
+  }
+
+  async openSource(path: string): Promise<void> {
+    if (!this.repository || !this.rootPath) {
+      throw new Error("当前没有已打开的知识库。");
+    }
+    const file = await this.findMarkdownSource(path);
+    if (!file) {
+      throw new Error("来源笔记已不存在或不再是 Markdown 文件。");
+    }
+    const error = await shell.openPath(join(this.rootPath, file.path));
+    if (error) {
+      throw new Error("无法打开来源笔记：" + error);
+    }
+  }
+
+  private async findMarkdownSource(path: string) {
+    if (!this.repository) {
+      return null;
+    }
+    const normalizedPath = path.split("#", 1)[0].trim().replace(/\\/g, "/");
+    if (!normalizedPath || /^https?:\/\//i.test(normalizedPath)) {
+      return null;
+    }
+    const direct = await this.repository.getMarkdownFile(normalizedPath);
+    if (direct) {
+      return direct;
+    }
+    if (normalizedPath.toLowerCase().endsWith(".md")) {
+      return null;
+    }
+    const expectedPath = `${normalizedPath}.md`.toLowerCase();
+    const matches = (await this.repository.listMarkdownFiles()).filter((candidate) =>
+      candidate.path.toLowerCase() === expectedPath || candidate.path.toLowerCase().endsWith(`/${expectedPath}`)
+    );
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  private async open(rootPath: string): Promise<WorkspaceState> {
+    const repository = new NodeFileSystemKnowledgeRepository(rootPath);
+    const index = new PortableMarkdownKnowledgeIndex(
+      repository,
+      (path) =>
+        path.startsWith(".obsidian/") ||
+        path.startsWith(".knowledge-loop-agent/") ||
+        path.startsWith("00 Inbox/Agent/")
+    );
+    const summary = await index.rebuild(this.policy);
+
+    this.rootPath = rootPath;
+    this.repository = repository;
+    this.index = index;
+    this.writeService = new DesktopWriteService(repository, this.policy);
+    const attachmentConfiguration = await readDesktopAgentConfiguration();
+    this.attachmentService = new DesktopAttachmentService(
+      repository,
+      this.policy,
+      attachmentConfiguration,
+      await readAttachmentState(rootPath)
+    );
+    this.summary = summary;
+    await this.restoreSessionService(rootPath, repository);
+    await saveWorkspacePath(rootPath);
+    return this.toState();
+  }
+
+  private async restoreSessionService(
+    rootPath: string,
+    repository: NodeFileSystemKnowledgeRepository
+  ): Promise<void> {
+    if (!this.didLoadSessionStates) {
+      this.sessionStates = await readSessionStates();
+      this.didLoadSessionStates = true;
+    }
+    this.sessionService = new DesktopSessionService(repository, this.sessionStates[rootPath] ?? {});
+  }
+
+  private async persistSessionState(): Promise<void> {
+    if (!this.rootPath || !this.sessionService) {
       return;
     }
-    const file = this.app.vault.getAbstractFileByPath(session.path);
-    if (!(file instanceof TFile)) {
-      this.agentSessionStore.remove(session.id);
-      await this.savePluginData();
+    this.sessionStates[this.rootPath] = this.sessionService.state;
+    await writeSessionStates(this.sessionStates);
+  }
+
+  private async persistAttachmentState(): Promise<void> {
+    if (!this.rootPath || !this.attachmentService) {
       return;
     }
-    try {
-      const preview = await this.previewAction({
-        type: "appendAgentSession",
-        sessionPath: session.path,
-        content: entry,
-        sources: [createAgentMemorySource(session.path, entry, "session-entry")]
-      });
-      if (!preview.existedBefore) {
-        throw new Error("当前会话笔记已不存在。 ");
-      }
-      await this.vaultActionService.apply(preview);
-      this.agentSessionStore.touch(session.id);
-      this.auditTrail.recordVaultWrite("appendAgentSession", session.path, "succeeded", "已追加 Agent 会话记录。 ");
-    } catch (error) {
-      this.auditTrail.recordVaultWrite("appendAgentSession", session.path, "failed", "Agent 会话记录追加失败。 ");
+    const states = await readAttachmentStates();
+    states[this.rootPath] = this.attachmentService.toState();
+    await writeAttachmentStates(states);
+  }
+
+  /**
+   * Build the semantic agent runtime.
+   *
+   * Explicit operational commands still use the regex intent router; every
+   * knowledge goal now goes through a model-proposed, user-confirmed plan.
+   */
+  private async createAgentRuntime(): Promise<DesktopAgentRuntime> {
+    if (!this.repository || !this.index || !this.writeService || !this.attachmentService) {
+      throw new Error("请先选择或迁移本地知识库。");
     }
+    const configuration = await readDesktopAgentConfiguration();
+    const repository = this.repository;
+    const index = this.index;
+    const write = this.writeService;
+    this.knowledgeService = new DesktopKnowledgeSystemService(index, this.policy, write, {
+      deepSeekApiKey: configuration.deepSeekApiKey,
+      deepSeekModel: configuration.deepSeekModel,
+      requestTimeoutMs: configuration.requestTimeoutMs,
+      knowledgeSystemFolder: KNOWLEDGE_SYSTEM_FOLDER
+    });
+    this.maintenanceService = new DesktopMaintenanceService(index, this.policy, {
+      deepSeekApiKey: configuration.deepSeekApiKey,
+      deepSeekModel: configuration.deepSeekModel,
+      requestTimeoutMs: configuration.requestTimeoutMs
+    });
+    this.relationService = new DesktopRelationService(repository, index, this.policy, configuration);
+    this.wikiService = new DesktopWikiService(repository, index, this.policy, {
+      deepSeekApiKey: configuration.deepSeekApiKey,
+      deepSeekModel: configuration.deepSeekModel,
+      requestTimeoutMs: configuration.requestTimeoutMs,
+      knowledgeSystemFolder: KNOWLEDGE_SYSTEM_FOLDER
+    });
+    const agent = new DesktopAgentService(index, {
+      ...configuration,
+      attachmentSearch: this.attachmentService.search.bind(this.attachmentService)
+    });
+    const runtime = new DesktopAgentRuntime(
+      {
+        index,
+        policy: this.policy,
+        agent,
+        wiki: this.wikiService,
+        knowledge: this.knowledgeService,
+        maintenance: this.maintenanceService,
+        attachments: this.attachmentService,
+        relation: this.relationService,
+        write,
+        knowledgeSystemFolder: KNOWLEDGE_SYSTEM_FOLDER,
+        deepSeekApiKey: () => configuration.deepSeekApiKey,
+        deepSeekModel: () => configuration.deepSeekModel,
+        requestTimeoutMs: () => configuration.requestTimeoutMs,
+        activeNotePath: () => this.activeNotePath,
+        formatClipboard: async () => {
+          const result = this.formatClipboard();
+          return { content: result.text, changed: result.changed };
+        },
+        describeStatus: () => this.describeStatus(configuration)
+      },
+      {
+        deepSeekApiKey: () => configuration.deepSeekApiKey,
+        deepSeekModel: () => configuration.deepSeekModel,
+        requestTimeoutMs: () => configuration.requestTimeoutMs,
+        hasTavilyApiKey: () => Boolean(configuration.tavilyApiKey.trim()),
+        hasRelevantWiki: async (goal) => {
+          const pages = await this.wikiService?.searchPages(goal, 1) ?? [];
+          return pages.length > 0;
+        }
+      }
+    );
+    this.agentRuntime = runtime;
+    return runtime;
+  }
+
+  private requireRuntime(): DesktopAgentRuntime {
+    if (!this.agentRuntime) {
+      throw new Error("请先生成一个 Agent 运行计划。");
+    }
+    return this.agentRuntime;
+  }
+
+  private describeStatus(configuration: Awaited<ReturnType<typeof readDesktopAgentConfiguration>>): string {
+    return [
+      `知识库：${this.rootPath ?? "未选择"}`,
+      `索引 ${this.summary?.indexedFiles ?? 0} 篇笔记、${this.summary?.chunkCount ?? 0} 个片段`,
+      `DeepSeek ${configuration.deepSeekApiKey.trim() ? "已配置" : "未配置"}`,
+      `Tavily ${configuration.tavilyApiKey.trim() ? "已配置" : "未配置"}`
+    ].join("；") + "。";
+  }
+
+  setActiveNote(path: string | null): void {
+    this.activeNotePath = path ?? null;
+  }
+
+  async planRun(goal: string): Promise<AgentRunView> {
+    const runtime = await this.createAgentRuntime();
+    return toAgentRunView(await runtime.plan(goal));
+  }
+
+  async runStep(runId: string, stepId: string): Promise<AgentRunView> {
+    return toAgentRunView(await this.requireRuntime().executeStep(runId, stepId, true));
+  }
+
+  async skipStep(runId: string, stepId: string): Promise<AgentRunView> {
+    return toAgentRunView(await this.requireRuntime().skipStep(runId, stepId));
+  }
+
+  async cancelRun(runId: string): Promise<AgentRunView> {
+    return toAgentRunView(await this.requireRuntime().cancel(runId));
+  }
+
+  async getWritePreviews(): Promise<WritePreviewView[]> {
+    const state = this.requireRuntime().getState();
+    return (state.writePreviews ?? []).map((preview) => ({
+      targetPath: preview.targetPath,
+      existedBefore: preview.existedBefore,
+      beforeContent: preview.beforeContent,
+      afterContent: preview.afterContent
+    }));
+  }
+
+  /** Write only what the user has previewed. */
+  async applyWritePreviews(): Promise<string[]> {
+    const runtime = this.requireRuntime();
+    const state = runtime.getState();
+    const previews = state.writePreviews ?? [];
+    if (!previews.length || !this.writeService) {
+      throw new Error("当前没有待确认的写入预览。");
+    }
+    const written: string[] = [];
+    for (const preview of previews) {
+      const result = await this.writeService.apply(preview);
+      written.push(result.targetPath);
+    }
+    if (state.wikiDraft) {
+      await this.wikiService?.persistRegistry(state.wikiDraft.registry);
+    }
+    this.summary = this.index ? await this.index.rebuild(this.policy) : this.summary;
+    return written;
+  }
+
+  private toState(): WorkspaceState {
+    if (!this.rootPath || !this.summary) {
+      throw new Error("知识库尚未初始化。");
+    }
+    return {
+      rootPath: this.rootPath,
+      displayName: basename(this.rootPath),
+      indexedFiles: this.summary.indexedFiles,
+      skippedFiles: this.summary.skippedFiles,
+      chunkCount: this.summary.chunkCount
+    };
   }
 }
 
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  const chunkSize = 0x8000;
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+const KNOWLEDGE_SYSTEM_FOLDER = "知识体系/Agent";
+
+function toAgentRunView(run: {
+  id: string;
+  goal: string;
+  status: "planned" | "running" | "completed" | "cancelled";
+  planSummary: string;
+  replanCount: number;
+  steps: Array<{
+    id: string;
+    tool: string;
+    action: string;
+    title: string;
+    reason: string;
+    requiresConfirmation: boolean;
+    status: "pending" | "running" | "completed" | "skipped" | "failed" | "blocked";
+    resultSummary?: string;
+  }>;
+}): AgentRunView {
+  return {
+    id: run.id,
+    goal: run.goal,
+    status: run.status,
+    planSummary: run.planSummary,
+    replanCount: run.replanCount,
+    steps: run.steps.map((step) => ({
+      id: step.id,
+      tool: step.tool,
+      action: step.action,
+      title: step.title,
+      reason: step.reason,
+      requiresConfirmation: step.requiresConfirmation,
+      status: step.status,
+      ...(step.resultSummary ? { resultSummary: step.resultSummary } : {})
+    }))
+  };
+}
+
+const workspace = new DesktopKnowledgeWorkspace();
+
+function createWindow(): BrowserWindow {
+  const window = new BrowserWindow(WINDOW_OPTIONS);
+  window.webContents.on("console-message", (details) => {
+    console.error("[renderer]", details.sourceId + ":" + details.lineNumber, details.message);
+  });
+  window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl) => {
+    console.error("[renderer-load]", errorCode, errorDescription, validatedUrl);
+  });
+  void window.loadFile(join(__dirname, "renderer", "index.html")).catch((error) => {
+    console.error("[renderer-load]", error);
+    dialog.showErrorBox("无法加载界面", error instanceof Error ? error.message : String(error));
+  });
+  return window;
+}
+
+function getWorkspaceStatePath(): string {
+  return join(app.getPath("userData"), "workspace.json");
+}
+
+function getDesktopEnvPath(): string {
+  return join(app.getPath("userData"), ".env");
+}
+
+function getSessionStatePath(): string {
+  return join(app.getPath("userData"), "sessions.json");
+}
+
+async function saveWorkspacePath(rootPath: string): Promise<void> {
+  await mkdir(app.getPath("userData"), { recursive: true });
+  await writeFile(getWorkspaceStatePath(), JSON.stringify({ rootPath }, null, 2), "utf8");
+}
+
+async function readSessionStates(): Promise<Record<string, AgentSessionStoreState>> {
+  try {
+    const raw = await readFile(getSessionStatePath(), "utf8");
+    const parsed = JSON.parse(raw) as { byWorkspace?: Record<string, AgentSessionStoreState> };
+    return parsed.byWorkspace ?? {};
+  } catch {
+    return {};
   }
-  return btoa(binary);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+async function writeSessionStates(states: Record<string, AgentSessionStoreState>): Promise<void> {
+  await mkdir(app.getPath("userData"), { recursive: true });
+  await writeFile(getSessionStatePath(), JSON.stringify({ byWorkspace: states }, null, 2), "utf8");
 }
 
-function isPersistedPluginData(value: unknown): value is PersistedPluginData {
-  return isRecord(value) && "settings" in value;
+function getAttachmentStatePath(): string {
+  return join(app.getPath("userData"), "attachments.json");
 }
 
-function normalizeWebFallbackPolicy(value: unknown): WebFallbackPolicy {
+async function readAttachmentStates(): Promise<Record<string, DesktopAttachmentState>> {
+  try {
+    const raw = await readFile(getAttachmentStatePath(), "utf8");
+    const parsed = JSON.parse(raw) as { byWorkspace?: Record<string, DesktopAttachmentState> };
+    return parsed.byWorkspace ?? {};
+  } catch {
+    return {};
+  }
+}
+
+async function readAttachmentState(rootPath: string): Promise<DesktopAttachmentState> {
+  const states = await readAttachmentStates();
+  return states[rootPath] ?? {};
+}
+
+async function writeAttachmentStates(states: Record<string, DesktopAttachmentState>): Promise<void> {
+  await mkdir(app.getPath("userData"), { recursive: true });
+  await writeFile(getAttachmentStatePath(), JSON.stringify({ byWorkspace: states }, null, 2), "utf8");
+}
+
+async function ensureDesktopEnvFile(): Promise<void> {
+  try {
+    const current = await readFile(getDesktopEnvPath(), "utf8");
+    const normalized = migrateDesktopEnv(current);
+    if (normalized !== current) {
+      await writeFile(getDesktopEnvPath(), normalized, "utf8");
+    }
+  } catch (error) {
+    if (!isMissingFileError(error)) {
+      throw error;
+    }
+    await mkdir(app.getPath("userData"), { recursive: true });
+    await writeFile(getDesktopEnvPath(), DESKTOP_ENV_TEMPLATE, "utf8");
+  }
+}
+
+function migrateDesktopEnv(contents: string): string {
+  const lines = contents
+    .split(/\r?\n/u)
+    .filter((line) => !/^GLM_(?:API_KEY|MODEL)\s*=/iu.test(line) && !/GLM.*(?:图片|PDF|解析)/iu.test(line));
+  if (!lines.some((line) => /^DEEPSEEK_VISION_MODEL\s*=/iu.test(line))) {
+    const modelIndex = lines.findIndex((line) => /^DEEPSEEK_MODEL\s*=/iu.test(line));
+    lines.splice(Math.max(0, modelIndex + 1), 0, "DEEPSEEK_VISION_MODEL=deepseek-v4-flash-vision-exp");
+  }
+  return `${lines.join("\n").replace(/\n+$/u, "")}\n`;
+}
+
+function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
+  return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+}
+
+async function readDesktopAgentConfiguration(): Promise<{
+  deepSeekApiKey: string;
+  deepSeekModel: string;
+  deepSeekVisionModel: string;
+  tavilyApiKey: string;
+  requestTimeoutMs: number;
+  webSearchResultLimit: number;
+  webFallbackPolicy: WebFallbackPolicy;
+}> {
+  await ensureDesktopEnvFile();
+  const contents = await readFile(getDesktopEnvPath(), "utf8");
+  return {
+    deepSeekApiKey: readEnvValue(contents, "DEEPSEEK_API_KEY") ?? "",
+    deepSeekModel: readEnvValue(contents, "DEEPSEEK_MODEL") ?? "deepseek-v4-flash",
+    deepSeekVisionModel: readEnvValue(contents, "DEEPSEEK_VISION_MODEL") ?? "deepseek-v4-flash-vision-exp",
+    tavilyApiKey: readEnvValue(contents, "TAVILY_API_KEY") ?? "",
+    requestTimeoutMs: 60_000,
+    webSearchResultLimit: 5,
+    webFallbackPolicy: parseWebFallbackPolicy(readEnvValue(contents, "WEB_FALLBACK_POLICY"))
+  };
+}
+
+async function getProviderStatus(): Promise<ProviderStatus> {
+  await ensureDesktopEnvFile();
+  const contents = await readFile(getDesktopEnvPath(), "utf8");
+  return {
+    deepSeekConfigured: Boolean(readEnvValue(contents, "DEEPSEEK_API_KEY")),
+    tavilyConfigured: Boolean(readEnvValue(contents, "TAVILY_API_KEY")),
+    deepSeekVisionConfigured: Boolean(readEnvValue(contents, "DEEPSEEK_API_KEY"))
+  };
+}
+
+async function openDesktopEnvFile(): Promise<void> {
+  await ensureDesktopEnvFile();
+  const error = await shell.openPath(getDesktopEnvPath());
+  if (error) {
+    throw new Error("无法打开本地模型配置文件：" + error);
+  }
+}
+
+function parseWebFallbackPolicy(value: string | null): WebFallbackPolicy {
   return value === "disabled" || value === "always-with-warning" || value === "stable-only"
     ? value
-    : DEFAULT_SETTINGS.webFallbackPolicy;
+    : "stable-only";
 }
 
-function formatModelRequestError(error: unknown): string {
-  const message = error instanceof Error ? error.message.trim() : "未知错误。";
-  return message.slice(0, 240) || "未知错误。";
+function isInternalWorkspacePath(path: string): boolean {
+  return path.startsWith(".obsidian/") || path.startsWith(".knowledge-loop-agent/");
 }
 
-function deduplicateWikiPages(
-  pages: Array<{ page: LlmWikiPageRecord; content: string }>
-): Array<{ page: LlmWikiPageRecord; content: string }> {
-  const seen = new Set<string>();
-  return pages.filter(({ page }) => {
-    if (seen.has(page.path)) {
-      return false;
-    }
-    seen.add(page.path);
-    return true;
-  });
+function actionResponse(
+  intent: Exclude<ReturnType<typeof detectDesktopAgentIntent>["intent"], "answer">,
+  content: string,
+  extra: Pick<DesktopAgentResponse, "wikiVerification" | "sessionStatus" | "profilePath" | "assistantStatePath"> = {}
+): DesktopAgentResponse {
+  return {
+    content,
+    intent,
+    mode: "local",
+    evidenceComplete: true,
+    sources: [],
+    ...extra
+  };
 }
 
-function renderWikiAnswerCitations(content: string, pages: LlmWikiPageRecord[]): string {
-  return content.replace(/\[S(\d+)\]/gu, (reference, value: string) => {
-    const page = pages[Number.parseInt(value, 10) - 1];
-    return page ? `[[${page.path}|${page.title}]]` : reference;
-  });
+function formatIntentAction(intent: Exclude<ReturnType<typeof detectDesktopAgentIntent>["intent"], "answer">): string {
+  const names: Record<typeof intent, string> = {
+    "start-session": "开始会话",
+    "close-session": "结束会话",
+    "open-profile": "查看用户画像",
+    "remember-profile": "更新用户画像",
+    "forget-profile": "遗忘用户画像",
+    "open-assistant-state": "查看助手状态",
+    "set-current-focus": "设置当前重点",
+    "compile-wiki": "编译 LLM Wiki",
+    "expand-wiki": "补全 LLM Wiki",
+    "inspect-wiki-sources": "检查 Wiki 来源",
+    "process-images": "解析图片",
+    "format-clipboard": "整理剪贴板",
+    "complete-relations": "补全笔记关联",
+    "verify-wiki": "联网核验 Wiki"
+  };
+  return names[intent];
 }
 
-function extractWikiLinkTargets(content: string): Set<string> {
-  const targets = new Set<string>();
-  for (const match of content.matchAll(/\[\[([^\]]+)\]\]/gu)) {
-    const target = match[1].split(/[|#]/u, 1)[0];
-    const normalized = normalizeLinkedNotePath(target);
-    if (normalized) {
-      targets.add(normalized);
-    }
+ipcMain.handle("workspace:choose", () => workspace.choose());
+ipcMain.handle("workspace:migrate-obsidian", () => workspace.migrateFromObsidian());
+ipcMain.handle("workspace:get", () => workspace.getState());
+ipcMain.handle("provider:get-status", () => getProviderStatus());
+ipcMain.handle("provider:open-config", () => openDesktopEnvFile());
+ipcMain.handle("agent:answer", (_event, question: string, context: DesktopAgentRequestContext | undefined) => workspace.answer(question, context));
+ipcMain.handle("answer:save", (_event, action, subject, content, sources) => workspace.saveAnswer(action, subject, content, sources));
+ipcMain.handle("wiki:create-update-preview", (_event, id: string) => workspace.createWikiUpdatePreview(id));
+ipcMain.handle("knowledge:search", (_event, query: string) => workspace.search(query));
+ipcMain.handle("knowledge:list-notes", () => workspace.listNotes());
+ipcMain.handle("knowledge:preview-source", (_event, path: string) => workspace.previewSource(path));
+ipcMain.handle("knowledge:open-source", (_event, path: string) => workspace.openSource(path));
+ipcMain.handle("agent:plan-run", (_event, goal: string, notePath?: string) => {
+  if (typeof notePath === "string") {
+    workspace.setActiveNote(notePath);
   }
-  return targets;
-}
+  return workspace.planRun(goal);
+});
+ipcMain.handle("agent:run-step", (_event, runId: string, stepId: string) => workspace.runStep(runId, stepId));
+ipcMain.handle("agent:skip-step", (_event, runId: string, stepId: string) => workspace.skipStep(runId, stepId));
+ipcMain.handle("agent:cancel-run", (_event, runId: string) => workspace.cancelRun(runId));
+ipcMain.handle("write:get-previews", () => workspace.getWritePreviews());
+ipcMain.handle("write:apply-previews", () => workspace.applyWritePreviews());
 
-function normalizeLinkedNotePath(value: string): string {
-  return value.trim().replace(/\\/gu, "/").replace(/\.md$/iu, "");
-}
+app.whenReady().then(async () => {
+  app.setName("知识环");
+  Menu.setApplicationMenu(null);
+  await ensureDesktopEnvFile();
+  await workspace.restore();
+  createWindow();
 
-class AttachmentBatchBlockedError extends Error {
-  constructor(
-    readonly kind: "paused" | "budget" | "rate-limit",
-    message: string,
-    readonly waitMs?: number
-  ) {
-    super(message);
-    this.name = "AttachmentBatchBlockedError";
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+}).catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error("[startup]", error);
+  dialog.showErrorBox("知识环启动失败", `无法初始化本地应用数据目录：${message}`);
+  app.quit();
+});
+
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
   }
-}
-
-function isEvidenceCollectionCall(call: AgentToolCall): boolean {
-  return call.tool === "research" && (call.action === "answer-vault" || isLlmWikiEvidenceCall(call));
-}
-
-function isLlmWikiEvidenceCall(call: AgentToolCall): boolean {
-  return call.tool === "research" && (
-    call.action === "wiki-search" ||
-    call.action === "wiki-read" ||
-    call.action === "wiki-follow" ||
-    call.action === "answer-wiki"
-  );
-}
-
-function isRuntimeBlockedError(error: unknown): boolean {
-  return isAgentRuntimeBlockedError(error) || error instanceof AttachmentBatchBlockedError;
-}
+});

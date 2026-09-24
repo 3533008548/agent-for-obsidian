@@ -67,7 +67,7 @@ export class DesktopAttachmentService {
         extension: file.extension,
         stat: { mtime: file.mtime, size: file.size }
       }));
-    return { ...this.index.scan(files as never[], this.policy), unsupportedPdfCount };
+    return { ...this.index.scan(files, this.policy), unsupportedPdfCount };
   }
 
   getStatus(): AttachmentBatchStatus {

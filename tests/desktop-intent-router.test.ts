@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectDesktopAgentIntent } from "../src/desktop/desktop-intent-router";
+import { detectDesktopAgentIntent } from "../core/desktop/desktop-intent-router";
 
 describe("desktop intent router", () => {
   it("routes explicit operational requests without a model classification request", () => {

@@ -6,8 +6,8 @@ import {
   ensureKnowledgeOrganizationPlan,
   ensureLlmWikiTraversalPlan,
   parseAgentRunPlan
-} from "../src/runtime/agent-runtime";
-import { AgentRunStore } from "../src/runtime/agent-run-store";
+} from "../core/runtime/agent-runtime";
+import { AgentRunStore } from "../core/runtime/agent-run-store";
 
 function plan() {
   return parseAgentRunPlan(JSON.stringify({

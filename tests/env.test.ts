@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ENV_TEMPLATE, readEnvValue } from "../src/services/env";
+import { ENV_TEMPLATE, readEnvValue } from "../core/services/env";
 
 describe("local env parsing", () => {
   it("reads a key without returning comments or surrounding quotes", () => {

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { hashText } from "../src/domain/content-hash";
+import { hashText } from "../core/domain/content-hash";
 import {
   createGardenerSources,
   parseGardenerPlan,
   type GardenerSource
-} from "../src/gardener/knowledge-gardener";
+} from "../core/gardener/knowledge-gardener";
 
 const sources: GardenerSource[] = [
   {

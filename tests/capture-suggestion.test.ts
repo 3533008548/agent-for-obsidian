@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildCaptureSuggestionMessages,
   parseCaptureSuggestion
-} from "../src/services/capture-suggestion";
+} from "../core/services/capture-suggestion";
 
 describe("capture suggestion JSON", () => {
   it("parses a valid JSON proposal, including a fenced fallback", () => {

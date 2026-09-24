@@ -6,7 +6,7 @@ import {
   getStandaloneWorkspaceName,
   migrateObsidianVault,
   previewObsidianVaultMigration
-} from "../src/desktop/obsidian-vault-migrator";
+} from "../core/desktop/obsidian-vault-migrator";
 
 const temporaryRoots: string[] = [];
 

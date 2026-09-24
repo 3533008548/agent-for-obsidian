@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { KnowledgeRepository } from "../src/core/knowledge-repository";
-import { DesktopAgentService } from "../src/desktop/desktop-agent-service";
-import { PortableMarkdownKnowledgeIndex } from "../src/indexing/portable-markdown-knowledge-index";
-import { createDefaultPermissionPolicy, PolicyEngine } from "../src/policy/policy-engine";
+import type { KnowledgeRepository } from "../core/core/knowledge-repository";
+import { DesktopAgentService } from "../core/desktop/desktop-agent-service";
+import { PortableMarkdownKnowledgeIndex } from "../core/indexing/portable-markdown-knowledge-index";
+import { createDefaultPermissionPolicy, PolicyEngine } from "../core/policy/policy-engine";
 
 afterEach(() => {
   vi.unstubAllGlobals();

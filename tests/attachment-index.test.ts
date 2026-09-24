@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { TFile } from "obsidian";
-import { AttachmentIndex } from "../src/indexing/attachment-index";
-import { createDefaultPermissionPolicy, PolicyEngine } from "../src/policy/policy-engine";
+import type { AttachmentScanFile } from "../core/indexing/attachment-index";
+import { AttachmentIndex } from "../core/indexing/attachment-index";
+import { createDefaultPermissionPolicy, PolicyEngine } from "../core/policy/policy-engine";
 
-function file(path: string, extension: string, mtime = 1, size = 100): TFile {
-  return { path, extension, stat: { mtime, size } } as TFile;
+function file(path: string, extension: string, mtime = 1, size = 100): AttachmentScanFile {
+  return { path, extension, stat: { mtime, size } };
 }
 
 describe("AttachmentIndex", () => {
