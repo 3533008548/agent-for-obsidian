@@ -12,7 +12,8 @@
     "dev": "npm run build && electron .",
     "start": "electron .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bridge": "esbuild src/bridge.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/kb-bridge.mjs && node node_modules/.cache/kb-bridge.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
