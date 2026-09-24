@@ -4,6 +4,7 @@ import { normalizeVaultPath } from "../policy/policy-engine";
 const MAX_AGENT_SESSIONS = 30;
 const MAX_PROFILE_CONTEXT_CHARACTERS = 2_400;
 const MAX_SESSION_CONTEXT_CHARACTERS = 3_600;
+const MAX_ASSISTANT_STATE_CONTEXT_CHARACTERS = 1_600;
 const PROFILE_MARKER_START = "<!-- knowledge-loop-agent-memory:start -->";
 const PROFILE_MARKER_END = "<!-- knowledge-loop-agent-memory:end -->";
 const SESSION_ENTRY_START = "<!-- knowledge-loop-agent:session-entry:start -->";
@@ -41,6 +42,7 @@ export interface AgentMemoryContext {
   content: string;
   includedProfile: boolean;
   includedSession: boolean;
+  includedAssistantState: boolean;
 }
 
 export interface AgentSessionMessage {
@@ -180,7 +182,12 @@ export function renderNewAgentSession(session: AgentSession): string {
   ].join("\n");
 }
 
-export function renderSessionExchange(userContent: string, assistantContent: string, now = new Date()): string {
+export function renderSessionExchange(
+  userContent: string,
+  assistantContent: string,
+  now = new Date(),
+  toolResult?: { toolName: string; summary: string }
+): string {
   return [
     SESSION_ENTRY_START,
     `## ${formatTimestamp(now)}`,
@@ -191,6 +198,11 @@ export function renderSessionExchange(userContent: string, assistantContent: str
     SESSION_AGENT_START,
     assistantContent.trim(),
     SESSION_AGENT_END,
+    ...(toolResult ? [
+      SESSION_TOOL_START,
+      `- ${toolResult.toolName.trim()}：${toolResult.summary.trim()}`,
+      SESSION_TOOL_END
+    ] : []),
     SESSION_ENTRY_END,
     ""
   ].join("\n");
@@ -243,7 +255,8 @@ function parseMarkedSessionEntry(entry: string, messages: AgentSessionMessage[])
     if (agentContent) {
       messages.push({ role: "agent", label, content: agentContent });
     }
-  } else if (toolContent !== null && toolContent) {
+  }
+  if (toolContent !== null && toolContent) {
     messages.push({ role: "tool", label, content: toolContent });
   }
 }
@@ -309,17 +322,24 @@ export function buildAgentProfileSkeleton(now = new Date()): string {
   ].join("\n");
 }
 
-export function buildAgentMemoryContext(profileContent: string, sessionContent: string): AgentMemoryContext {
+export function buildAgentMemoryContext(
+  profileContent: string,
+  sessionContent: string,
+  assistantStateContent = ""
+): AgentMemoryContext {
   const profile = clipStart(profileContent.trim(), MAX_PROFILE_CONTEXT_CHARACTERS);
   const session = clipEnd(sessionContent.trim(), MAX_SESSION_CONTEXT_CHARACTERS);
+  const assistantState = clipStart(assistantStateContent.trim(), MAX_ASSISTANT_STATE_CONTEXT_CHARACTERS);
   const sections = [
     profile ? `用户画像（用户可编辑，不是外部事实）：\n${profile}` : "",
+    assistantState ? `助手状态（来自用户明确委托和已执行动作，不是知识库事实）：\n${assistantState}` : "",
     session ? `当前会话最近记录（仅用于延续对话，不是知识库事实）：\n${session}` : ""
   ].filter(Boolean);
   return {
     content: sections.join("\n\n---\n\n"),
     includedProfile: Boolean(profile),
-    includedSession: Boolean(session)
+    includedSession: Boolean(session),
+    includedAssistantState: Boolean(assistantState)
   };
 }
 
@@ -368,7 +388,7 @@ export function parseProfileMemorySuggestions(rawContent: string): ProfileMemory
 export function applyProfileMemorySuggestions(
   currentContent: string,
   suggestions: ProfileMemorySuggestion[],
-  sessionPath: string,
+  sessionPath?: string,
   now = new Date()
 ): string {
   const base = currentContent.trim() || buildAgentProfileSkeleton(now).trim();
@@ -385,7 +405,7 @@ export function applyProfileMemorySuggestions(
   const existingEntries = prepared.slice(start + PROFILE_MARKER_START.length, end).trim();
   const additions = suggestions
     .filter((suggestion) => !prepared.includes(suggestion.content))
-    .map((suggestion) => `- ${formatProfileCategory(suggestion.category)}：${suggestion.content}\n  - 来源：[[${sessionPath}]] · ${formatDate(now)}`);
+    .map((suggestion) => `- ${formatProfileCategory(suggestion.category)}：${suggestion.content}\n  - 来源：${formatProfileSource(sessionPath)} · ${formatDate(now)}`);
   if (!additions.length) {
     return prepared.endsWith("\n") ? prepared : `${prepared}\n`;
   }
@@ -393,6 +413,35 @@ export function applyProfileMemorySuggestions(
     .filter(Boolean)
     .join("\n");
   return `${prepared.slice(0, start)}${replacement}${prepared.slice(end + PROFILE_MARKER_END.length)}`.replace(/\s*$/u, "\n");
+}
+
+export function removeProfileMemorySuggestions(currentContent: string, target: string): {
+  content: string;
+  removedCount: number;
+} {
+  const normalizedTarget = target.trim().toLocaleLowerCase();
+  if (!normalizedTarget) {
+    return { content: currentContent, removedCount: 0 };
+  }
+  const start = currentContent.indexOf(PROFILE_MARKER_START);
+  const end = currentContent.indexOf(PROFILE_MARKER_END);
+  if (start < 0 || end <= start) {
+    return { content: currentContent, removedCount: 0 };
+  }
+  const section = currentContent.slice(start + PROFILE_MARKER_START.length, end).trim();
+  const entries = section ? section.split(/(?=^- (?:长期目标|偏好|约束|已确认事实)：)/mu) : [];
+  const kept = entries.filter((entry) => !entry.toLocaleLowerCase().includes(normalizedTarget));
+  const removedCount = entries.length - kept.length;
+  if (!removedCount) {
+    return { content: currentContent, removedCount: 0 };
+  }
+  const replacement = [PROFILE_MARKER_START, kept.join("").trim(), PROFILE_MARKER_END]
+    .filter(Boolean)
+    .join("\n");
+  return {
+    content: `${currentContent.slice(0, start)}${replacement}${currentContent.slice(end + PROFILE_MARKER_END.length)}`.replace(/\s*$/u, "\n"),
+    removedCount
+  };
 }
 
 export function createAgentMemorySource(path: string, content: string, locator: string): {
@@ -459,6 +508,10 @@ function isProfileMemoryCategory(value: unknown): value is ProfileMemoryCategory
 
 function formatProfileCategory(category: ProfileMemoryCategory): string {
   return ({ goal: "长期目标", preference: "偏好", constraint: "约束", fact: "已确认事实" })[category];
+}
+
+function formatProfileSource(sessionPath: string | undefined): string {
+  return sessionPath ? `[[${sessionPath}]]` : "用户明确指令";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

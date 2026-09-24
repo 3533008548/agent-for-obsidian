@@ -4,7 +4,8 @@ import {
   createLlmWikiRegistry,
   getLinkedWikiPages,
   markLlmWikiSourceStale,
-  searchLlmWiki
+  searchLlmWiki,
+  updateLlmWikiTopicSourceHealth
 } from "../src/wiki/llm-wiki-system";
 import type { KnowledgeIntegrationSession } from "../src/integration/knowledge-system";
 
@@ -64,5 +65,60 @@ describe("LLM Wiki system", () => {
     const stale = markLlmWikiSourceStale(compilation.nextRegistry, "AI/LangGraph/StateGraph.md", "2026-09-03T02:00:00.000Z");
     expect(stale.topics[0].status).toBe("stale");
     expect(stale.errorBook.some((error) => error.type === "source-stale" && error.status === "open")).toBe(true);
+  });
+
+  it("keeps cumulative source coverage when an existing topic is expanded", () => {
+    const first = compileLlmWikiTopic(session, createLlmWikiRegistry(), "知识体系/Agent");
+    const expandedSession: KnowledgeIntegrationSession = {
+      ...session,
+      createdAt: "2026-09-04T01:00:00.000Z",
+      sources: [
+        {
+          id: "S3",
+          title: "中断恢复",
+          content: "恢复机制保存执行状态。",
+          source: { type: "note", pathOrUrl: "AI/LangGraph/恢复.md", locator: "heading=恢复", contentHash: "resume-hash", parserVersion: "markdown-v1" }
+        }
+      ],
+      map: {
+        overview: "LangGraph 可以保存并恢复执行状态。",
+        nodes: [
+          { id: "resume", title: "中断恢复", summary: "恢复机制保存执行状态。", sourceIds: ["S3"], priority: "medium" }
+        ],
+        conflicts: [],
+        gaps: []
+      }
+    };
+    const expanded = compileLlmWikiTopic(expandedSession, first.nextRegistry, "知识体系/Agent", {
+      mode: "expand",
+      coverageReport: { mode: "expand", added: 1, changed: 0, reused: 0, remainingCandidates: 2 }
+    });
+    const topic = expanded.nextRegistry.topics[0];
+
+    expect(topic.sourceHashes).toEqual(expect.arrayContaining([
+      { pathOrUrl: "AI/LangGraph/StateGraph.md", contentHash: "state-hash" },
+      { pathOrUrl: "AI/LangGraph/恢复.md", contentHash: "resume-hash" }
+    ]));
+    expect(topic.coverage?.seenSourceHashes).toEqual(expect.arrayContaining([
+      { pathOrUrl: "AI/LangGraph/StateGraph.md", contentHash: "state-hash" },
+      { pathOrUrl: "AI/LangGraph/恢复.md", contentHash: "resume-hash" }
+    ]));
+    expect(topic.coverage?.lastReport?.remainingCandidates).toBe(2);
+    expect(topic.pages.map((page) => page.title)).toEqual(expect.arrayContaining([
+      "StateGraph",
+      "Checkpoint",
+      "中断恢复"
+    ]));
+  });
+
+  it("marks a topic stale when a recorded local source is missing or changed", () => {
+    const compilation = compileLlmWikiTopic(session, createLlmWikiRegistry(), "知识体系/Agent");
+    const updated = updateLlmWikiTopicSourceHealth(compilation.nextRegistry, "LangGraph", [
+      { pathOrUrl: "AI/LangGraph/StateGraph.md", status: "missing", checkedAt: "2026-09-04T02:00:00.000Z" },
+      { pathOrUrl: "AI/LangGraph/持久化.md", status: "active", checkedAt: "2026-09-04T02:00:00.000Z" }
+    ]);
+
+    expect(updated.topics[0].status).toBe("stale");
+    expect(updated.topics[0].sourceHealth?.[0].status).toBe("missing");
   });
 });

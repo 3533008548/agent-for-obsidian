@@ -40,6 +40,7 @@ export interface DesktopAgentResponse {
   wikiVerification?: DesktopWikiVerificationReport;
   sessionStatus?: SessionStatus;
   profilePath?: string;
+  assistantStatePath?: string;
 }
 
 export type DesktopAgentIntent =
@@ -47,7 +48,13 @@ export type DesktopAgentIntent =
   | "start-session"
   | "close-session"
   | "open-profile"
+  | "remember-profile"
+  | "forget-profile"
+  | "open-assistant-state"
+  | "set-current-focus"
   | "compile-wiki"
+  | "expand-wiki"
+  | "inspect-wiki-sources"
   | "process-images"
   | "format-clipboard"
   | "complete-relations"

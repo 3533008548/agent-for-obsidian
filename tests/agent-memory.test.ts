@@ -6,6 +6,7 @@ import {
   buildAgentProfileSkeleton,
   parseAgentSessionTranscript,
   parseProfileMemorySuggestions,
+  removeProfileMemorySuggestions,
   renderNewAgentSession,
   renderSessionExchange,
   renderSessionToolResult
@@ -38,12 +39,14 @@ describe("Agent memory", () => {
   });
 
   it("uses a bounded recent session window and a bounded profile window", () => {
-    const context = buildAgentMemoryContext("P".repeat(3_000), "S".repeat(4_000));
+    const context = buildAgentMemoryContext("P".repeat(3_000), "S".repeat(4_000), "A".repeat(2_200));
     expect(context.includedProfile).toBe(true);
     expect(context.includedSession).toBe(true);
+    expect(context.includedAssistantState).toBe(true);
     expect(context.content).toContain("用户画像");
+    expect(context.content).toContain("助手状态");
     expect(context.content).toContain("较早会话记录已省略");
-    expect(context.content.length).toBeLessThan(6_300);
+    expect(context.content.length).toBeLessThan(8_000);
   });
 
   it("parses stored exchanges and tool summaries for the chat view", () => {
@@ -70,6 +73,16 @@ describe("Agent memory", () => {
       { role: "user", label: "2026-08-17 17:01", content: "整理 LangGraph 笔记" },
       { role: "agent", label: "2026-08-17 17:01", content: answer }
     ]);
+  });
+
+  it("records a routed action as part of the same session event", () => {
+    const transcript = renderSessionExchange(
+      "编译 LangGraph Wiki",
+      "已写入 3 个页面。",
+      new Date("2026-08-17T09:01:00.000Z"),
+      { toolName: "编译 LLM Wiki", summary: "已写入 3 个页面。" }
+    );
+    expect(parseAgentSessionTranscript(transcript).map((message) => message.role)).toEqual(["user", "agent", "tool"]);
   });
 
   it("continues to parse legacy session records", () => {
@@ -129,5 +142,10 @@ describe("Agent memory", () => {
     expect(() => parseProfileMemorySuggestions(JSON.stringify({
       items: [{ category: "identity", content: "不允许的分类" }]
     }))).toThrow("无效条目");
+
+    const removed = removeProfileMemorySuggestions(updated, "默认使用中文");
+    expect(removed.removedCount).toBe(1);
+    expect(removed.content).not.toContain("默认使用中文回答");
+    expect(removed.content).toContain("完成 Agent 项目的求职展示");
   });
 });

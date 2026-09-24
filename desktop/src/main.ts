@@ -177,7 +177,12 @@ class DesktopKnowledgeWorkspace {
     }
     const route = detectDesktopAgentIntent({ question, activeNotePath: context.activeNotePath });
     if (route.intent !== "answer") {
-      return this.executeIntent(route.intent, route.subject, route.notePath, route.sessionTitle);
+      const response = await this.executeIntent(route.intent, route.subject, route.notePath, route.sessionTitle);
+      if (route.intent !== "close-session" && this.sessionService) {
+        await this.sessionService.appendActionExchange(question, response.content, formatIntentAction(route.intent));
+        await this.persistSessionState();
+      }
+      return response;
     }
     const memoryContext = this.sessionService
       ? (await this.sessionService.getMemoryContext()).content
@@ -217,12 +222,76 @@ class DesktopKnowledgeWorkspace {
         const profilePath = await this.sessionService.ensureProfile();
         return actionResponse(intent, "已准备用户画像，可在预览中直接编辑长期偏好、背景和目标。", { profilePath });
       }
+      case "remember-profile": {
+        if (!subject) {
+          return actionResponse(intent, "请在“记住”后说明要保存的稳定信息，例如“记住我偏好简洁的中文回答”。");
+        }
+        if (!this.sessionService) {
+          throw new Error("请先选择或迁移本地知识库。");
+        }
+        const result = await this.sessionService.rememberProfile(subject);
+        return actionResponse(intent, result.changed ? `已记入用户画像：${subject}` : "这条信息已存在于用户画像中。", { profilePath: result.path });
+      }
+      case "forget-profile": {
+        if (!subject) {
+          return actionResponse(intent, "请说明要忘记的画像内容，例如“忘记我偏好详细回答”。");
+        }
+        if (!this.sessionService) {
+          throw new Error("请先选择或迁移本地知识库。");
+        }
+        const result = await this.sessionService.forgetProfile(subject);
+        return actionResponse(intent, result.removedCount
+          ? `已从用户画像移除 ${result.removedCount} 条与“${subject}”匹配的记忆。`
+          : "用户画像中没有找到匹配的已确认记忆。", { profilePath: result.path });
+      }
+      case "open-assistant-state": {
+        if (!this.sessionService) {
+          throw new Error("请先选择或迁移本地知识库。");
+        }
+        const assistantStatePath = await this.sessionService.ensureAssistantState();
+        return actionResponse(intent, "已打开助手状态：这里记录当前关注与最近已执行的 Agent 动作。", { assistantStatePath });
+      }
+      case "set-current-focus": {
+        if (!subject) {
+          return actionResponse(intent, "请在“设为当前重点”后说明需要持续跟进的事项。");
+        }
+        if (!this.sessionService) {
+          throw new Error("请先选择或迁移本地知识库。");
+        }
+        const assistantStatePath = await this.sessionService.setCurrentFocus(subject);
+        return actionResponse(intent, `已将当前重点设为：${subject}`, { assistantStatePath });
+      }
       case "compile-wiki": {
         if (!subject) {
           return actionResponse(intent, "请说明要编译的 Wiki 主题，例如“编译 LangGraph LLM Wiki”。");
         }
         const result = await this.compileWiki(subject);
         return actionResponse(intent, `已编译 LLM Wiki「${result.topic}」：使用 ${result.sourceCount} 条本地资料，写入 ${result.pageCount} 个页面。`);
+      }
+      case "expand-wiki": {
+        if (!subject) {
+          return actionResponse(intent, "请说明要补全的 Wiki 主题，例如“补全 LangGraph LLM Wiki”。");
+        }
+        const result = await this.compileWiki(subject, "expand");
+        return actionResponse(intent, [
+          `已补全 LLM Wiki「${result.topic}」：使用 ${result.sourceCount} 条本地资料，写入 ${result.pageCount} 个页面。`,
+          `本轮新增覆盖 ${result.coverage.added} 条，变更/新片段 ${result.coverage.changed} 条，复用上下文 ${result.coverage.reused} 条；仍有 ${result.coverage.remainingCandidates} 篇候选资料待覆盖。`,
+          result.sourceHealth.missing || result.sourceHealth.changed || result.sourceHealth.unverified
+            ? `历史来源检查：已变化 ${result.sourceHealth.changed} 个，已删除 ${result.sourceHealth.missing} 个，不可核验 ${result.sourceHealth.unverified} 个；这些内容仍需核验。`
+            : "历史来源检查：当前依赖来源均可本地复核。"
+        ].join("\n"));
+      }
+      case "inspect-wiki-sources": {
+        if (!subject) {
+          return actionResponse(intent, "请说明要检查来源的 Wiki 主题，例如“检查 LangGraph LLM Wiki 来源”。");
+        }
+        const result = await this.inspectWikiSources(subject);
+        return actionResponse(intent, [
+          `LLM Wiki「${result.topic}」的本地来源检查完成：有效 ${result.sourceHealth.active} 个，已变化 ${result.sourceHealth.changed} 个，已删除 ${result.sourceHealth.missing} 个，当前不可核验 ${result.sourceHealth.unverified} 个。`,
+          result.sourceHealth.missing || result.sourceHealth.changed || result.sourceHealth.unverified
+            ? "这些来源不会被当作确定事实依据；需要时可再执行“联网核验 … LLM Wiki”。"
+            : "当前本地来源与已编译版本一致。"
+        ].join("\n"));
       }
       case "process-images": {
         const scan = await this.scanAttachments();
@@ -267,21 +336,32 @@ class DesktopKnowledgeWorkspace {
     return this.writeService.apply(preview);
   }
 
-  private async compileWiki(topic: string): Promise<{
+  private async compileWiki(topic: string, mode: "compile" | "expand" = "compile"): Promise<{
     topic: string;
     pageCount: number;
     sourceCount: number;
     updatedCount: number;
     paths: string[];
+    coverage: { added: number; changed: number; reused: number; remainingCandidates: number };
+    sourceHealth: { active: number; changed: number; missing: number; unverified: number };
   }> {
     if (!this.repository || !this.index) {
       throw new Error("请先选择或迁移本地知识库。 ");
     }
     const configuration = await readDesktopAgentConfiguration();
     this.wikiService = new DesktopWikiService(this.repository, this.index, this.policy, configuration);
-    const result = await this.wikiService.compile(topic);
+    const result = await this.wikiService.compile(topic, mode);
     this.summary = await this.index.rebuild(this.policy);
     return result;
+  }
+
+  private async inspectWikiSources(topic: string) {
+    if (!this.repository || !this.index) {
+      throw new Error("请先选择或迁移本地知识库。 ");
+    }
+    const configuration = await readDesktopAgentConfiguration();
+    this.wikiService = new DesktopWikiService(this.repository, this.index, this.policy, configuration);
+    return this.wikiService.inspectSources(topic);
   }
 
   private async scanAttachments(): Promise<{ queued: number; unchanged: number; blocked: number; removed: number; unsupportedPdfCount: number }> {
@@ -356,6 +436,9 @@ class DesktopKnowledgeWorkspace {
   }
 
   private async closeSession(): Promise<SessionStatus> {
+    if (this.sessionService?.activeSession) {
+      await this.sessionService.appendActionExchange("结束当前会话", "已结束当前会话。", "结束会话");
+    }
     this.sessionService?.closeSession();
     await this.persistSessionState();
     return this.getSessionStatus();
@@ -639,7 +722,7 @@ function isInternalWorkspacePath(path: string): boolean {
 function actionResponse(
   intent: Exclude<ReturnType<typeof detectDesktopAgentIntent>["intent"], "answer">,
   content: string,
-  extra: Pick<DesktopAgentResponse, "wikiVerification" | "sessionStatus" | "profilePath"> = {}
+  extra: Pick<DesktopAgentResponse, "wikiVerification" | "sessionStatus" | "profilePath" | "assistantStatePath"> = {}
 ): DesktopAgentResponse {
   return {
     content,
@@ -649,6 +732,26 @@ function actionResponse(
     sources: [],
     ...extra
   };
+}
+
+function formatIntentAction(intent: Exclude<ReturnType<typeof detectDesktopAgentIntent>["intent"], "answer">): string {
+  const names: Record<typeof intent, string> = {
+    "start-session": "开始会话",
+    "close-session": "结束会话",
+    "open-profile": "查看用户画像",
+    "remember-profile": "更新用户画像",
+    "forget-profile": "遗忘用户画像",
+    "open-assistant-state": "查看助手状态",
+    "set-current-focus": "设置当前重点",
+    "compile-wiki": "编译 LLM Wiki",
+    "expand-wiki": "补全 LLM Wiki",
+    "inspect-wiki-sources": "检查 Wiki 来源",
+    "process-images": "解析图片",
+    "format-clipboard": "整理剪贴板",
+    "complete-relations": "补全笔记关联",
+    "verify-wiki": "联网核验 Wiki"
+  };
+  return names[intent];
 }
 
 ipcMain.handle("workspace:choose", () => workspace.choose());

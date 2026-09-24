@@ -37,7 +37,35 @@ export interface LlmWikiTopicRecord {
   status: LlmWikiTopicStatus;
   updatedAt: string;
   sourceHashes: Array<Pick<SourceRef, "pathOrUrl" | "contentHash">>;
+  coverage?: LlmWikiCoverage;
+  sourceHealth?: LlmWikiSourceHealth[];
   pages: LlmWikiPageRecord[];
+}
+
+export type LlmWikiCompilationMode = "compile" | "expand";
+
+export interface LlmWikiCoverageReport {
+  mode: LlmWikiCompilationMode;
+  added: number;
+  changed: number;
+  reused: number;
+  remainingCandidates: number;
+}
+
+/** Cumulative source evidence used to keep incremental compilation from restarting at the same notes. */
+export interface LlmWikiCoverage {
+  seenSourceHashes: Array<Pick<SourceRef, "pathOrUrl" | "contentHash">>;
+  lastExpansionAt?: string;
+  lastReport?: LlmWikiCoverageReport;
+}
+
+export type LlmWikiSourceStatus = "active" | "changed" | "missing" | "unverified";
+
+/** Health is derived from the current local files; it never restores deleted source text. */
+export interface LlmWikiSourceHealth {
+  pathOrUrl: string;
+  status: LlmWikiSourceStatus;
+  checkedAt: string;
 }
 
 export interface LlmWikiError {
@@ -68,6 +96,12 @@ export interface LlmWikiCompilation {
   nextRegistry: LlmWikiRegistry;
 }
 
+export interface LlmWikiCompilationOptions {
+  mode?: LlmWikiCompilationMode;
+  coverageReport?: LlmWikiCoverageReport;
+  sourceHealth?: LlmWikiSourceHealth[];
+}
+
 export interface LlmWikiSearchResult {
   page: LlmWikiPageRecord;
   score: number;
@@ -84,26 +118,43 @@ export function createLlmWikiRegistry(value?: Partial<LlmWikiRegistry>): LlmWiki
 export function compileLlmWikiTopic(
   session: KnowledgeIntegrationSession,
   registry: LlmWikiRegistry,
-  knowledgeSystemFolder: string
+  knowledgeSystemFolder: string,
+  options: LlmWikiCompilationOptions = {}
 ): LlmWikiCompilation {
   const wikiRootPath = `${normalizePath(knowledgeSystemFolder)}/${LLM_WIKI_FOLDER}`;
-  const topicFolder = sanitizePathSegment(session.topic);
+  const topicFolder = getLlmWikiTopicId(session.topic);
   const topicRelativeFolder = `${LLM_WIKI_FOLDER}/${topicFolder}`;
   const topicIndexPath = `${wikiRootPath}/${topicFolder}/概览.md`;
   const conceptPages = createConceptPages(session, topicRelativeFolder, topicIndexPath, wikiRootPath);
-  const topicPage = createTopicPage(session, topicRelativeFolder, topicIndexPath, conceptPages);
-  const sourceHashes = uniqueSources(session.sources.map((source) => source.source)).map((source) => ({
+  const previousTopic = registry.topics.find((topic) => topic.id === topicFolder);
+  const retainedConcepts = options.mode === "expand"
+    ? retainExistingConceptPages(previousTopic, topicIndexPath, conceptPages)
+    : [];
+  const topicPage = createTopicPage(session, topicRelativeFolder, topicIndexPath, conceptPages, retainedConcepts);
+  const currentSourceHashes = uniqueSources(session.sources.map((source) => source.source)).map((source) => ({
     pathOrUrl: source.pathOrUrl,
     contentHash: source.contentHash
   }));
+  const previousCoverage = previousTopic?.coverage?.seenSourceHashes ?? previousTopic?.sourceHashes ?? [];
+  const sourceHashes = options.mode === "expand"
+    ? mergeSourceHashes(previousTopic?.sourceHashes ?? [], currentSourceHashes)
+    : currentSourceHashes;
+  const coverage: LlmWikiCoverage = {
+    seenSourceHashes: mergeSourceHashes(previousCoverage, currentSourceHashes),
+    ...(options.mode === "expand" ? { lastExpansionAt: session.createdAt } : previousTopic?.coverage?.lastExpansionAt ? { lastExpansionAt: previousTopic.coverage.lastExpansionAt } : {}),
+    ...(options.coverageReport ? { lastReport: options.coverageReport } : previousTopic?.coverage?.lastReport ? { lastReport: previousTopic.coverage.lastReport } : {})
+  };
+  const sourceHealth = options.sourceHealth ?? previousTopic?.sourceHealth;
   const topicRecord: LlmWikiTopicRecord = {
     id: topicFolder,
     topic: session.topic,
     indexPath: topicIndexPath,
-    status: "fresh",
+    status: hasSourceHealthIssue(sourceHealth) ? "stale" : "fresh",
     updatedAt: session.createdAt,
     sourceHashes,
-    pages: [topicPage, ...conceptPages].map(toPageRecord)
+    coverage,
+    ...(sourceHealth?.length ? { sourceHealth } : {}),
+    pages: [toPageRecord(topicPage), ...conceptPages.map(toPageRecord), ...retainedConcepts]
   };
   const topics = [...registry.topics.filter((topic) => topic.id !== topicRecord.id), topicRecord]
     .sort((left, right) => left.topic.localeCompare(right.topic));
@@ -157,7 +208,8 @@ export function getLinkedWikiPages(registry: LlmWikiRegistry, pages: LlmWikiPage
 
 export function markLlmWikiSourceStale(registry: LlmWikiRegistry, sourcePath: string, observedAt = new Date().toISOString()): LlmWikiRegistry {
   const normalizedPath = normalizePath(sourcePath);
-  const staleTopics = registry.topics.filter((topic) => topic.sourceHashes.some((source) => normalizePath(source.pathOrUrl) === normalizedPath));
+  const staleTopics = registry.topics.filter((topic) => getTopicSourceHashes(topic)
+    .some((source) => normalizePath(source.pathOrUrl) === normalizedPath));
   if (!staleTopics.length) {
     return registry;
   }
@@ -179,6 +231,25 @@ export function markLlmWikiSourceStale(registry: LlmWikiRegistry, sourcePath: st
     }
   }
   return { ...registry, topics, errorBook: errors.slice(-120) };
+}
+
+export function updateLlmWikiTopicSourceHealth(
+  registry: LlmWikiRegistry,
+  topicId: string,
+  sourceHealth: LlmWikiSourceHealth[]
+): LlmWikiRegistry {
+  const topics = registry.topics.map((topic) => topic.id === topicId
+    ? {
+      ...topic,
+      sourceHealth,
+      status: hasSourceHealthIssue(sourceHealth) ? "stale" as const : "fresh" as const
+    }
+    : topic);
+  return { ...registry, topics };
+}
+
+export function getLlmWikiTopicId(topic: string): string {
+  return sanitizePathSegment(topic);
 }
 
 export function isLlmWikiPath(path: string, knowledgeSystemFolder: string): boolean {
@@ -240,10 +311,12 @@ function createTopicPage(
   session: KnowledgeIntegrationSession,
   topicRelativeFolder: string,
   topicIndexPath: string,
-  concepts: LlmWikiPageDraft[]
+  concepts: LlmWikiPageDraft[],
+  retainedConcepts: LlmWikiPageRecord[] = []
 ): LlmWikiPageDraft {
   const sources = uniqueSources(session.sources.map((source) => source.source));
-  const links = concepts.map((concept) => concept.path);
+  const allConcepts = [...concepts, ...retainedConcepts];
+  const links = allConcepts.map((concept) => concept.path);
   return {
     path: topicIndexPath,
     relativePath: `${topicRelativeFolder}/概览.md`,
@@ -264,7 +337,7 @@ function createTopicPage(
       "",
       "## 概念导航",
       "",
-      ...concepts.map((concept) => `- [[${concept.path}|${concept.title}]]：${concept.summary}`),
+      ...allConcepts.map((concept) => `- [[${concept.path}|${concept.title}]]：${concept.summary}`),
       "",
       "## 已知差异",
       "",
@@ -280,6 +353,18 @@ function createTopicPage(
       ""
     ].join("\n")
   };
+}
+
+function retainExistingConceptPages(
+  previousTopic: LlmWikiTopicRecord | undefined,
+  topicIndexPath: string,
+  replacementPages: LlmWikiPageDraft[]
+): LlmWikiPageRecord[] {
+  if (!previousTopic) {
+    return [];
+  }
+  const replacementPaths = new Set(replacementPages.map((page) => page.path));
+  return previousTopic.pages.filter((page) => page.path !== topicIndexPath && !replacementPaths.has(page.path));
 }
 
 function createGlobalIndexPage(topics: LlmWikiTopicRecord[], wikiRootPath: string, sources: SourceRef[]): LlmWikiPageDraft {
@@ -416,6 +501,32 @@ function uniqueSources(sources: SourceRef[]): SourceRef[] {
     seen.add(key);
     return true;
   });
+}
+
+function getTopicSourceHashes(topic: LlmWikiTopicRecord): Array<Pick<SourceRef, "pathOrUrl" | "contentHash">> {
+  return topic.sourceHashes;
+}
+
+function hasSourceHealthIssue(sourceHealth: LlmWikiSourceHealth[] | undefined): boolean {
+  return Boolean(sourceHealth?.some((source) => source.status !== "active"));
+}
+
+function mergeSourceHashes(
+  ...groups: Array<Array<Pick<SourceRef, "pathOrUrl" | "contentHash">>>
+): Array<Pick<SourceRef, "pathOrUrl" | "contentHash">> {
+  const seen = new Set<string>();
+  const merged: Array<Pick<SourceRef, "pathOrUrl" | "contentHash">> = [];
+  for (const group of groups) {
+    for (const source of group) {
+      const key = `${normalizePath(source.pathOrUrl)}:${source.contentHash}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      merged.push({ pathOrUrl: source.pathOrUrl, contentHash: source.contentHash });
+    }
+  }
+  return merged;
 }
 
 function scorePage(page: LlmWikiPageRecord, query: string, terms: string[]): number {

@@ -18,7 +18,7 @@
 
 - src/main.ts：Electron 主进程、目录选择、索引生命周期与 IPC。
 - src/preload.ts：通过 contextBridge 暴露最小桌面 API。
-- src/renderer/：中文单对话界面，左侧提供可折叠的 Markdown 笔记目录；点击文件可在应用内预览 Markdown / LLM Wiki 页面、跟随 Wiki 链接继续阅读，也保留外部打开。用户在对话中直接描述目标，Agent 会路由到问答、会话、用户画像、LLM Wiki、图片解析、剪贴板整理、笔记关联或联网核验；模型配置与 Obsidian 迁移收在“更多”菜单。
+- src/renderer/：中文单对话界面，左侧提供可折叠的 Markdown 笔记目录；点击文件可在应用内预览 Markdown / LLM Wiki 页面、跟随 Wiki 链接继续阅读，也保留外部打开。用户在对话中直接描述目标，Agent 会路由到问答、会话、用户画像、助手状态、LLM Wiki、图片解析、剪贴板整理、笔记关联或联网核验；模型配置与 Obsidian 迁移收在“更多”菜单。
 - ../src/core/knowledge-repository.ts：桌面端与插件共用的只读工作区接口。
 - ../src/indexing/portable-markdown-knowledge-index.ts：不依赖 Obsidian API 的 Markdown 分块、权限过滤和检索。
 - ../src/desktop/node-file-system-knowledge-repository.ts：用户选择目录的 Node 文件系统适配器，负责 Markdown、原始 JSON 和附件读取写入。
@@ -31,3 +31,16 @@
 - ../src/desktop/desktop-relation-service.ts：基于当前笔记和候选笔记生成并写入托管关联区块。
 
 模型密钥通过应用数据目录下的 `.env` 注入：DeepSeek 负责文本与图片（`DEEPSEEK_VISION_MODEL=deepseek-v4-flash-vision-exp`），Tavily 负责网页检索。保存 `.env` 后下一次操作即时读取，无需重启。
+
+## LLM Wiki 的编译与补全
+
+- 输入“编译 LangGraph LLM Wiki”会按当前检索结果重建主题页面。
+- 输入“补全 LangGraph LLM Wiki”会读取该主题已覆盖的来源记录，优先选择此前未覆盖或内容已变化的资料，仅保留少量旧资料维持上下文；同一篇长笔记最多使用两个片段。
+- 补全完成后会报告新增覆盖、变更/新片段、复用上下文和仍待覆盖的候选数。注册表保留累计来源哈希，为下一次补全继续避开已覆盖资料。
+- 输入“检查 LangGraph LLM Wiki 来源”会直接比对当前本地文件与已编译片段哈希，区分有效、已变化、已删除和不可核验来源；这一步不联网，也不会恢复已删除笔记。存在问题时，后续可再执行“联网核验 … LLM Wiki”。
+
+## 记忆行为
+
+- `Agent Profile.md`：仅在用户明确说“记住……”时写入稳定的目标、偏好、约束或事实；“忘记……”可移除对应条目。每项带会话来源（若有）。
+- `Assistant State.md`：记录当前重点和最近 Agent 动作，动作会自动追加；输入“查看助手状态”或“设为当前重点：……”即可查看或更新。
+- `Sessions/`：当前会话会记录问答和工具执行结果。用户画像、助手状态与当前会话共同构成下一轮模型上下文；它们不作为知识库事实处理。

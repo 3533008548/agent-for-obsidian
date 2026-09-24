@@ -18,14 +18,22 @@ describe("DesktopSessionService", () => {
 
     const session = await service.createSession("LangGraph 学习");
     await service.appendExchange("LangGraph 是什么？", "LangGraph 用于构建有状态的 LLM 应用。");
+    await service.appendActionExchange("编译 LangGraph Wiki", "已编译 3 个页面。", "编译 LLM Wiki");
+    const remembered = await service.rememberProfile("我偏好简洁的中文回答");
+    const statePath = await service.setCurrentFocus("完善个人助手记忆系统");
 
     const content = await readFile(join(root, ...session.path.split("/")), "utf8");
     const context = await service.getMemoryContext();
 
     expect(content).toContain("LangGraph 是什么？");
     expect(content).toContain("有状态的 LLM 应用");
+    expect(content).toContain("编译 LLM Wiki");
     expect(context.includedSession).toBe(true);
+    expect(context.includedAssistantState).toBe(true);
     expect(context.content).toContain("当前会话最近记录");
+    expect(context.content).toContain("助手状态");
+    expect((await readFile(join(root, ...remembered.path.split("/")), "utf8"))).toContain("偏好：我偏好简洁的中文回答");
+    expect((await readFile(join(root, ...statePath.split("/")), "utf8"))).toContain("完善个人助手记忆系统");
     await expect(service.ensureProfile()).resolves.toBe("00 Inbox/Agent/Agent Profile.md");
   });
 });

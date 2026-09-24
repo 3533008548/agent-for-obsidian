@@ -30,7 +30,7 @@ export function App() {
     {
       id: "welcome",
       role: "agent",
-      text: "选择一个本地 Markdown 知识库后，直接描述你的目标。我会判断是回答问题，还是执行编译 Wiki、解析图片、整理剪贴板、补全笔记关联或联网核验等操作。"
+      text: "选择一个本地 Markdown 知识库后，直接描述你的目标。我会判断是回答问题，还是执行编译 Wiki、解析图片、整理剪贴板、补全笔记关联或联网核验等操作。说“记住……”可更新用户画像；说“查看助手状态”或“设为当前重点：……”可管理持续状态。"
     }
   ]);
   const [input, setInput] = useState("");
@@ -249,6 +249,9 @@ export function App() {
       }
       if (answer.profilePath) {
         await previewSource(answer.profilePath);
+      }
+      if (answer.assistantStatePath) {
+        await previewSource(answer.assistantStatePath);
       }
     } catch (error) {
       appendError(error);

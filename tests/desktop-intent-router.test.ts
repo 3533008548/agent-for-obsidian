@@ -7,6 +7,14 @@ describe("desktop intent router", () => {
       intent: "compile-wiki",
       subject: "LangGraph"
     });
+    expect(detectDesktopAgentIntent({ question: "补全 LangGraph LLM Wiki" })).toMatchObject({
+      intent: "expand-wiki",
+      subject: "LangGraph"
+    });
+    expect(detectDesktopAgentIntent({ question: "检查 LangGraph LLM Wiki 来源" })).toMatchObject({
+      intent: "inspect-wiki-sources",
+      subject: "LangGraph"
+    });
     expect(detectDesktopAgentIntent({ question: "联网核验 LangGraph LLM Wiki" })).toMatchObject({
       intent: "verify-wiki",
       subject: "LangGraph"
@@ -19,6 +27,22 @@ describe("desktop intent router", () => {
       question: "补全当前笔记关联",
       activeNotePath: "后端/LangGraph.md"
     })).toEqual({ intent: "complete-relations", notePath: "后端/LangGraph.md" });
+  });
+
+  it("only changes profile or assistant state after explicit memory commands", () => {
+    expect(detectDesktopAgentIntent({ question: "记住我偏好简洁的中文回答" })).toEqual({
+      intent: "remember-profile",
+      subject: "我偏好简洁的中文回答"
+    });
+    expect(detectDesktopAgentIntent({ question: "忘记我偏好详细回答" })).toEqual({
+      intent: "forget-profile",
+      subject: "我偏好详细回答"
+    });
+    expect(detectDesktopAgentIntent({ question: "设为当前重点：完善记忆系统" })).toEqual({
+      intent: "set-current-focus",
+      subject: "完善记忆系统"
+    });
+    expect(detectDesktopAgentIntent({ question: "查看助手状态" })).toEqual({ intent: "open-assistant-state" });
   });
 
   it("keeps ambiguous or explanatory questions on the answer route", () => {
