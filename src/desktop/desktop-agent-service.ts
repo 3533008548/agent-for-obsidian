@@ -8,6 +8,7 @@ import {
   type WebFallbackPolicy
 } from "../services/web-answer-policy";
 import type { MarkdownSearchResult } from "../indexing/markdown-search";
+import { LocalKnowledgeUnavailableError } from "../runtime/agent-runtime-errors";
 
 export interface DesktopAgentConfiguration {
   deepSeekApiKey: string;
@@ -21,6 +22,14 @@ export interface DesktopAgentConfiguration {
 }
 
 export type DesktopAgentAnswerMode = "local" | "web" | "general" | "evidence-gap";
+
+/**
+ * `auto` keeps the standalone behaviour: missing local evidence silently
+ * advances to web or general knowledge. `local-only` is used by the agent
+ * runtime so `research:answer-vault` can report the gap and let the planner
+ * choose a different action instead of repeating the same local query.
+ */
+export type DesktopAgentAnswerScope = "auto" | "local-only";
 
 export interface DesktopAgentSource {
   path: string;
@@ -49,7 +58,7 @@ export class DesktopAgentService {
     private readonly configuration: DesktopAgentConfiguration
   ) {}
 
-  async answer(question: string): Promise<DesktopAgentAnswer> {
+  async answer(question: string, scope: DesktopAgentAnswerScope = "auto"): Promise<DesktopAgentAnswer> {
     const normalizedQuestion = question.trim();
     if (!normalizedQuestion) {
       throw new Error("问题不能为空。");
@@ -66,14 +75,15 @@ export class DesktopAgentService {
       .slice(0, 8);
     const sources = toDesktopSources(localResults);
     const modelSources = toModelSources(localResults);
-    const deepSeek = new DeepSeekClient({
-      apiKey: this.configuration.deepSeekApiKey,
-      model: this.configuration.deepSeekModel,
-      slowResponseMs: this.configuration.requestTimeoutMs,
-      postJson: postJsonWithFetch
-    });
+    const deepSeek = this.createClient();
 
     if (!modelSources.length) {
+      if (scope === "local-only") {
+        throw new LocalKnowledgeUnavailableError(
+          "本地知识库没有找到相关来源，已请求 Agent 改用替代计划。",
+          "本地知识库检索为 0 条结果。不要再次安排 research:answer-vault；请根据用户目标选择其他有信息增益的动作，例如在需要时安排联网研究。"
+        );
+      }
       return this.recoverWithoutLocalEvidence(normalizedQuestion, deepSeek, sources);
     }
 
@@ -92,6 +102,12 @@ export class DesktopAgentService {
     }
 
     const recoveryNote = "本地资料缺少直接证据：" + localAnswer.missingEvidence.join("、") + "。已自动继续补证。";
+    if (scope === "local-only") {
+      throw new LocalKnowledgeUnavailableError(
+        recoveryNote,
+        `本地资料缺少直接证据：${localAnswer.missingEvidence.join("、")}。不要再次安排 research:answer-vault；请根据用户目标选择有信息增益的替代动作，例如 research:answer-web。`
+      );
+    }
     const recovered = await this.answerFromWebOrGeneralKnowledge(normalizedQuestion, deepSeek);
     if (recovered) {
       return {
@@ -107,6 +123,28 @@ export class DesktopAgentService {
       sources,
       recoveryNote: recoveryNote + " " + getNoWebResultMessage(this.configuration.webFallbackPolicy, normalizedQuestion)
     };
+  }
+
+  /** Web research used by the runtime's `research:answer-web` action. */
+  async answerFromWeb(question: string): Promise<DesktopAgentAnswer> {
+    const normalizedQuestion = question.trim();
+    if (!normalizedQuestion) {
+      throw new Error("问题不能为空。");
+    }
+    const recovered = await this.answerFromWebOrGeneralKnowledge(normalizedQuestion, this.createClient());
+    if (!recovered) {
+      throw new Error(getNoWebResultMessage(this.configuration.webFallbackPolicy, normalizedQuestion));
+    }
+    return { ...recovered, sources: [] };
+  }
+
+  private createClient(): DeepSeekClient {
+    return new DeepSeekClient({
+      apiKey: this.configuration.deepSeekApiKey,
+      model: this.configuration.deepSeekModel,
+      slowResponseMs: this.configuration.requestTimeoutMs,
+      postJson: postJsonWithFetch
+    });
   }
 
   private async recoverWithoutLocalEvidence(

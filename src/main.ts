@@ -107,6 +107,11 @@ import {
   type AgentToolExecutionResult
 } from "./runtime/agent-tools";
 import {
+  isRuntimeBlockedError as isAgentRuntimeBlockedError,
+  LocalKnowledgeUnavailableError,
+  RuntimeToolBlockedError
+} from "./runtime/agent-runtime-errors";
+import {
   AgentSessionStore,
   applyProfileMemorySuggestions,
   buildAgentMemoryContext,
@@ -2246,24 +2251,6 @@ class AttachmentBatchBlockedError extends Error {
   }
 }
 
-class RuntimeToolBlockedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "RuntimeToolBlockedError";
-  }
-}
-
-class LocalKnowledgeUnavailableError extends Error {
-  constructor(
-    message: string,
-    readonly replanFeedback: string,
-    readonly autoContinue = true
-  ) {
-    super(message);
-    this.name = "LocalKnowledgeUnavailableError";
-  }
-}
-
 function isEvidenceCollectionCall(call: AgentToolCall): boolean {
   return call.tool === "research" && (call.action === "answer-vault" || isLlmWikiEvidenceCall(call));
 }
@@ -2278,5 +2265,5 @@ function isLlmWikiEvidenceCall(call: AgentToolCall): boolean {
 }
 
 function isRuntimeBlockedError(error: unknown): boolean {
-  return error instanceof RuntimeToolBlockedError || error instanceof AttachmentBatchBlockedError;
+  return isAgentRuntimeBlockedError(error) || error instanceof AttachmentBatchBlockedError;
 }

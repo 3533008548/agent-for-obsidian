@@ -395,7 +395,8 @@ class DesktopKnowledgeWorkspace {
     }
     const configuration = await readDesktopAgentConfiguration();
     this.relationService = new DesktopRelationService(this.repository, this.index, this.policy, configuration);
-    const result = await this.relationService.complete(path);
+    const preview = await this.relationService.preview(path);
+    const result = await this.relationService.apply(preview);
     this.summary = await this.index.rebuild(this.policy);
     return result;
   }

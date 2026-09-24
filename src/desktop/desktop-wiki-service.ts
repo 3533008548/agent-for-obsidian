@@ -1,12 +1,15 @@
 import { hashText } from "../domain/content-hash";
 import type { SourceRef } from "../domain/source-ref";
 import {
-  createLlmWikiRegistry,
   compileLlmWikiTopic,
+  createLlmWikiRegistry,
+  getLinkedWikiPages,
   getLlmWikiTopicId,
+  searchLlmWiki,
   updateLlmWikiTopicSourceHealth,
   type LlmWikiCompilationMode,
   type LlmWikiCoverageReport,
+  type LlmWikiPageRecord,
   type LlmWikiRegistry,
   type LlmWikiSourceHealth,
   type LlmWikiTopicRecord
@@ -54,6 +57,27 @@ export interface DesktopWikiSourceHealthResult {
   topic: string;
   sourceHealth: DesktopWikiSourceHealthSummary;
   sources: LlmWikiSourceHealth[];
+}
+
+export interface DesktopWikiPageContent {
+  path: string;
+  title: string;
+  content: string;
+}
+
+export interface DesktopWikiPageDraft {
+  targetPath: string;
+  content: string;
+}
+
+/** An unwritten compilation: pages plus the registry they will produce. */
+export interface DesktopWikiCompileDraft {
+  topic: string;
+  pages: DesktopWikiPageDraft[];
+  sourceCount: number;
+  coverage: LlmWikiCoverageReport;
+  sourceHealth: DesktopWikiSourceHealthSummary;
+  registry: LlmWikiRegistry;
 }
 
 type WikiCandidateKind = "new" | "changed" | "anchor";
@@ -121,21 +145,19 @@ export class DesktopWikiService {
     });
     let updatedCount = 0;
     for (const page of compilation.pages) {
-      const decision = this.policy.decide({
-        action: "createKnowledgeSystemNote",
-        targetPath: `${this.knowledgeSystemFolder}/${page.relativePath}`
-      });
+      const targetPath = `${this.knowledgeSystemFolder}/${page.relativePath}`;
+      const decision = this.policy.decide({ action: "createKnowledgeSystemNote", targetPath });
       if (!decision.allowed) {
         throw new Error(`Wiki 写入被权限策略拒绝：${decision.reason}`);
       }
-      if (await this.repository.getMarkdownFile(`${this.knowledgeSystemFolder}/${page.relativePath}`)) {
-        await this.repository.writeText(`${this.knowledgeSystemFolder}/${page.relativePath}`, page.content);
+      if (await this.repository.getMarkdownFile(targetPath)) {
+        await this.repository.writeText(targetPath, page.content);
       } else {
-        await this.repository.createText(`${this.knowledgeSystemFolder}/${page.relativePath}`, page.content);
+        await this.repository.createText(targetPath, page.content);
       }
       updatedCount += 1;
     }
-    await this.repository.writeRaw(this.registryPath, JSON.stringify(compilation.nextRegistry, null, 2));
+    await this.persistRegistry(compilation.nextRegistry);
     return {
       topic: normalizedTopic,
       pageCount: compilation.pages.length,
@@ -145,6 +167,66 @@ export class DesktopWikiService {
       coverage: selection.coverage,
       sourceHealth: summarizeSourceHealth(sourceHealth)
     };
+  }
+
+  /**
+   * Compile without touching the disk.
+   *
+   * The agent runtime turns each draft page into a write preview so the user
+   * confirms the whole batch before anything is written.
+   */
+  async compileDraft(topic: string, mode: DesktopWikiCompileMode = "compile"): Promise<DesktopWikiCompileDraft> {
+    const normalizedTopic = topic.trim();
+    if (!normalizedTopic) {
+      throw new Error("LLM Wiki 主题不能为空。");
+    }
+    if (!this.configuration.deepSeekApiKey.trim()) {
+      throw new Error("请先在模型配置中填写 DEEPSEEK_API_KEY。");
+    }
+    const wikiPrefix = `${this.knowledgeSystemFolder.replace(/\\/g, "/").replace(/\/+$/u, "/")}LLM Wiki/`;
+    const registry = await this.readRegistry();
+    const previousTopic = registry.topics.find((record) => record.id === getLlmWikiTopicId(normalizedTopic));
+    const sourceHealth = mode === "expand" && previousTopic ? await this.inspectTopicSources(previousTopic) : [];
+    const selection = this.collectSources(normalizedTopic, wikiPrefix, previousTopic, mode);
+    if (!selection.sources.length) {
+      throw new Error("本地没有命中可用于编译 Wiki 的资料。");
+    }
+    const client = new DeepSeekClient({
+      apiKey: this.configuration.deepSeekApiKey,
+      model: this.configuration.deepSeekModel,
+      slowResponseMs: this.configuration.requestTimeoutMs,
+      postJson: postJsonWithFetch
+    });
+    const map = await client.createKnowledgeMap(normalizedTopic, selection.sources);
+    const session: KnowledgeIntegrationSession = {
+      id: `desktop-wiki-${Date.now()}`,
+      topic: normalizedTopic,
+      scopeLabel: `本地检索：${normalizedTopic}`,
+      createdAt: new Date().toISOString(),
+      sources: selection.sources,
+      map
+    };
+    const compilation = compileLlmWikiTopic(session, registry, this.knowledgeSystemFolder, {
+      mode,
+      coverageReport: selection.coverage,
+      sourceHealth
+    });
+    return {
+      topic: normalizedTopic,
+      pages: compilation.pages.map((page) => ({
+        targetPath: `${this.knowledgeSystemFolder}/${page.relativePath}`,
+        content: page.content
+      })),
+      sourceCount: selection.sources.length,
+      coverage: selection.coverage,
+      sourceHealth: summarizeSourceHealth(sourceHealth),
+      registry: compilation.nextRegistry
+    };
+  }
+
+  /** Persist the registry after a confirmed compilation. */
+  async persistRegistry(registry: LlmWikiRegistry): Promise<void> {
+    await this.repository.writeRaw(this.registryPath, JSON.stringify(registry, null, 2));
   }
 
   async inspectSources(topic: string): Promise<DesktopWikiSourceHealthResult> {
@@ -189,6 +271,74 @@ export class DesktopWikiService {
         source: toSourceRef(result.chunk.source.pathOrUrl, result.chunk.source.locator, result.chunk.content)
       }));
     return selectSourcesForWikiCompilation(candidates, previousTopic, mode);
+  }
+
+  /**
+   * Traversal half of the Wiki tool set: search, read, follow, then answer.
+   *
+   * Reading a page still goes through the policy engine, so a page inside a
+   * restricted folder never reaches the model.
+   */
+  async searchPages(query: string, limit = 4): Promise<LlmWikiPageRecord[]> {
+    const registry = await this.readRegistry();
+    return searchLlmWiki(registry, query, limit).map((result) => result.page);
+  }
+
+  async readPages(records: LlmWikiPageRecord[], limit = 2): Promise<DesktopWikiPageContent[]> {
+    const pages: DesktopWikiPageContent[] = [];
+    for (const record of records.slice(0, limit)) {
+      const decision = this.policy.decide({ action: "readVault", targetPath: record.path });
+      if (!decision.allowed) {
+        continue;
+      }
+      if (!(await this.repository.getMarkdownFile(record.path))) {
+        continue;
+      }
+      pages.push({
+        path: record.path,
+        title: record.title,
+        content: await this.repository.readText(record.path)
+      });
+    }
+    return pages;
+  }
+
+  async followPages(readPaths: string[], limit = 3): Promise<LlmWikiPageRecord[]> {
+    const registry = await this.readRegistry();
+    const visited = registry.topics
+      .flatMap((topic) => topic.pages ?? [])
+      .filter((page) => readPaths.includes(page.path));
+    return getLinkedWikiPages(registry, visited, limit).filter((page) => !readPaths.includes(page.path));
+  }
+
+  async answerFromPages(
+    question: string,
+    pages: DesktopWikiPageContent[],
+    memoryContext = ""
+  ): Promise<{ content: string; paths: string[] }> {
+    if (!pages.length) {
+      throw new Error("本次 Wiki 遍历没有可回答的页面。");
+    }
+    if (!this.configuration.deepSeekApiKey.trim()) {
+      throw new Error("请先在模型配置中填写 DEEPSEEK_API_KEY。");
+    }
+    const client = new DeepSeekClient({
+      apiKey: this.configuration.deepSeekApiKey,
+      model: this.configuration.deepSeekModel,
+      slowResponseMs: this.configuration.requestTimeoutMs,
+      postJson: postJsonWithFetch
+    });
+    const answer = await client.answerWithSources(
+      question,
+      pages.map((page, index) => ({
+        id: index + 1,
+        path: page.path,
+        locator: page.title,
+        content: page.content
+      })),
+      memoryContext
+    );
+    return { content: answer.content, paths: pages.map((page) => page.path) };
   }
 
   private async readRegistry(): Promise<LlmWikiRegistry> {

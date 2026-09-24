@@ -23,6 +23,11 @@ export interface DesktopRelationResult {
   relationCount: number;
 }
 
+export interface DesktopRelationPreview extends DesktopRelationResult {
+  /** `null` when the model found no relation worth writing. */
+  afterContent: string | null;
+}
+
 export class DesktopRelationService {
   constructor(
     private readonly repository: NodeFileSystemKnowledgeRepository,
@@ -31,7 +36,13 @@ export class DesktopRelationService {
     private readonly configuration: DesktopRelationConfiguration
   ) {}
 
-  async complete(path: string): Promise<DesktopRelationResult> {
+  /**
+   * Analyse relations and return the content that *would* be written.
+   *
+   * Nothing is written here: the caller turns `afterContent` into a write
+   * preview so the user confirms before the note is touched.
+   */
+  async preview(path: string): Promise<DesktopRelationPreview> {
     const currentPath = path.trim().replace(/\\/g, "/");
     const currentFile = await this.repository.getMarkdownFile(currentPath);
     if (!currentFile) {
@@ -60,15 +71,28 @@ export class DesktopRelationService {
     });
     const plan = await client.proposeNoteRelations(sources);
     if (!plan.relations.length) {
-      return { path: currentPath, summary: plan.summary, relationCount: 0 };
+      return { path: currentPath, summary: plan.summary, relationCount: 0, afterContent: null };
     }
     const decision = this.policy.decide({ action: "modifyExistingNote", targetPath: currentPath });
     if (!decision.allowed) {
       throw new Error(`关联写入被权限策略拒绝：${decision.reason}`);
     }
     const relationItems = renderNoteRelationItems(plan.relations, sources);
-    await this.repository.writeText(currentPath, mergeManagedNoteRelations(currentContent, relationItems));
-    return { path: currentPath, summary: plan.summary, relationCount: plan.relations.length };
+    return {
+      path: currentPath,
+      summary: plan.summary,
+      relationCount: plan.relations.length,
+      afterContent: mergeManagedNoteRelations(currentContent, relationItems)
+    };
+  }
+
+  /** Write a previously previewed relation block. */
+  async apply(preview: DesktopRelationPreview): Promise<DesktopRelationResult> {
+    if (!preview.afterContent) {
+      return { path: preview.path, summary: preview.summary, relationCount: preview.relationCount };
+    }
+    await this.repository.writeText(preview.path, preview.afterContent);
+    return { path: preview.path, summary: preview.summary, relationCount: preview.relationCount };
   }
 }
 
