@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { DesktopApi } from "./shared/desktop-api";
+import type { DesktopAgentStreamEvent, DesktopApi } from "./shared/desktop-api";
 
 const api: DesktopApi = {
   chooseWorkspace: () => ipcRenderer.invoke("workspace:choose"),
@@ -8,6 +8,16 @@ const api: DesktopApi = {
   getProviderStatus: () => ipcRenderer.invoke("provider:get-status"),
   openModelConfig: () => ipcRenderer.invoke("provider:open-config"),
   askAgent: (question, context) => ipcRenderer.invoke("agent:answer", question, context),
+  askAgentStream: (question, context, runId) =>
+    ipcRenderer.invoke("agent:answer-stream", question, context, runId),
+  cancelAgentStream: (runId) => ipcRenderer.invoke("agent:answer-cancel", runId),
+  onAgentStreamEvent: (listener) => {
+    const wrapped = (_event: unknown, payload: DesktopAgentStreamEvent): void => listener(payload);
+    ipcRenderer.on("agent:answer-stream-event", wrapped);
+    return () => {
+      ipcRenderer.removeListener("agent:answer-stream-event", wrapped);
+    };
+  },
   saveAnswer: (action, subject, content, sources) => ipcRenderer.invoke("answer:save", action, subject, content, sources),
   createWikiUpdatePreview: (id) => ipcRenderer.invoke("wiki:create-update-preview", id),
   search: (query) => ipcRenderer.invoke("knowledge:search", query),

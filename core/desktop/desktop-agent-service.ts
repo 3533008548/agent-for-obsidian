@@ -46,6 +46,19 @@ export interface DesktopAgentAnswer {
 }
 
 /**
+ * Progressive delivery hooks for {@link DesktopAgentService.answer}.
+ *
+ * `onReset` fires when the answer abandons an already-streamed partial result and
+ * starts a different generation phase, so the UI can drop the stale text instead
+ * of concatenating two unrelated answers.
+ */
+export interface DesktopAgentStreamOptions {
+  onDelta: (text: string) => void;
+  onReset?: () => void;
+  signal?: AbortSignal;
+}
+
+/**
  * Desktop equivalent of the plugin's primary research route.
  *
  * It always starts with local evidence. If that evidence is absent or
@@ -58,7 +71,11 @@ export class DesktopAgentService {
     private readonly configuration: DesktopAgentConfiguration
   ) {}
 
-  async answer(question: string, scope: DesktopAgentAnswerScope = "auto"): Promise<DesktopAgentAnswer> {
+  async answer(
+    question: string,
+    scope: DesktopAgentAnswerScope = "auto",
+    stream?: DesktopAgentStreamOptions
+  ): Promise<DesktopAgentAnswer> {
     const normalizedQuestion = question.trim();
     if (!normalizedQuestion) {
       throw new Error("问题不能为空。");
@@ -84,13 +101,14 @@ export class DesktopAgentService {
           "本地知识库检索为 0 条结果。不要再次安排 research:answer-vault；请根据用户目标选择其他有信息增益的动作，例如在需要时安排联网研究。"
         );
       }
-      return this.recoverWithoutLocalEvidence(normalizedQuestion, deepSeek, sources);
+      return this.recoverWithoutLocalEvidence(normalizedQuestion, deepSeek, sources, stream);
     }
 
     const localAnswer = await deepSeek.answerWithSources(
       normalizedQuestion,
       modelSources,
-      this.configuration.memoryContext
+      this.configuration.memoryContext,
+      stream ? { onDelta: stream.onDelta, signal: stream.signal, streamField: "answer" } : undefined
     );
     if (localAnswer.evidenceComplete) {
       return {
@@ -108,7 +126,7 @@ export class DesktopAgentService {
         `本地资料缺少直接证据：${localAnswer.missingEvidence.join("、")}。不要再次安排 research:answer-vault；请根据用户目标选择有信息增益的替代动作，例如 research:answer-web。`
       );
     }
-    const recovered = await this.answerFromWebOrGeneralKnowledge(normalizedQuestion, deepSeek);
+    const recovered = await this.answerFromWebOrGeneralKnowledge(normalizedQuestion, deepSeek, stream);
     if (recovered) {
       return {
         ...recovered,
@@ -150,9 +168,10 @@ export class DesktopAgentService {
   private async recoverWithoutLocalEvidence(
     question: string,
     deepSeek: DeepSeekClient,
-    sources: DesktopAgentSource[]
+    sources: DesktopAgentSource[],
+    stream?: DesktopAgentStreamOptions
   ): Promise<DesktopAgentAnswer> {
-    const recovered = await this.answerFromWebOrGeneralKnowledge(question, deepSeek);
+    const recovered = await this.answerFromWebOrGeneralKnowledge(question, deepSeek, stream);
     if (recovered) {
       return {
         ...recovered,
@@ -171,7 +190,8 @@ export class DesktopAgentService {
 
   private async answerFromWebOrGeneralKnowledge(
     question: string,
-    deepSeek: DeepSeekClient
+    deepSeek: DeepSeekClient,
+    stream?: DesktopAgentStreamOptions
   ): Promise<Omit<DesktopAgentAnswer, "sources" | "recoveryNote"> | null> {
     if (this.configuration.tavilyApiKey.trim()) {
       try {
@@ -181,7 +201,14 @@ export class DesktopAgentService {
           postJson: postJsonWithFetch
         });
         const search = await tavily.search(question, this.configuration.webSearchResultLimit);
-        const answer = await deepSeek.answerFromWeb(question, search.sources, this.configuration.memoryContext);
+        // A partial local answer may already be on screen; discard it first.
+        stream?.onReset?.();
+        const answer = await deepSeek.answerFromWeb(
+          question,
+          search.sources,
+          this.configuration.memoryContext,
+          stream ? { onDelta: stream.onDelta, signal: stream.signal } : undefined
+        );
         return {
           content: answer.content,
           mode: "web",
@@ -195,7 +222,12 @@ export class DesktopAgentService {
     }
 
     if (shouldUseGeneralKnowledgeFallback(this.configuration.webFallbackPolicy, question)) {
-      const answer = await deepSeek.answerFromGeneralKnowledge(question, this.configuration.memoryContext);
+      stream?.onReset?.();
+      const answer = await deepSeek.answerFromGeneralKnowledge(
+        question,
+        this.configuration.memoryContext,
+        stream ? { onDelta: stream.onDelta, signal: stream.signal } : undefined
+      );
       return {
         content: answer.content,
         mode: "general",

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell, type WebContents } from "electron";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import {
@@ -10,7 +10,11 @@ import {
   PortableMarkdownKnowledgeIndex,
   type MarkdownIndexSummary
 } from "../core/indexing/portable-markdown-knowledge-index";
-import { DesktopAgentService } from "../core/desktop/desktop-agent-service";
+import {
+  DesktopAgentService,
+  type DesktopAgentStreamOptions
+} from "../core/desktop/desktop-agent-service";
+import { StreamCancelledError } from "../core/services/fetch-api-request";
 import { DesktopSessionService } from "../core/desktop/desktop-session-service";
 import { DesktopWriteService } from "../core/desktop/desktop-write-service";
 import { DesktopWikiService } from "../core/desktop/desktop-wiki-service";
@@ -33,6 +37,7 @@ import {
 import type {
   DesktopSearchHit,
   DesktopAgentResponse,
+  DesktopAgentStreamEvent,
   DesktopAgentRequestContext,
   DesktopNoteEntry,
   ObsidianMigrationState,
@@ -78,6 +83,7 @@ class DesktopKnowledgeWorkspace {
   private wikiService: DesktopWikiService | null = null;
   private attachmentService: DesktopAttachmentService | null = null;
   private relationService: DesktopRelationService | null = null;
+  private readonly activeAnswerStreams = new Map<string, AbortController>();
   private wikiVerificationService: DesktopWikiVerificationService | null = null;
   private agentRuntime: DesktopAgentRuntime | null = null;
   private knowledgeService: DesktopKnowledgeSystemService | null = null;
@@ -180,7 +186,11 @@ class DesktopKnowledgeWorkspace {
       }));
   }
 
-  async answer(question: string, context: DesktopAgentRequestContext = {}): Promise<DesktopAgentResponse> {
+  async answer(
+    question: string,
+    context: DesktopAgentRequestContext = {},
+    stream?: DesktopAgentStreamOptions
+  ): Promise<DesktopAgentResponse> {
     if (!this.index) {
       throw new Error("请先选择或迁移本地知识库。");
     }
@@ -201,12 +211,54 @@ class DesktopKnowledgeWorkspace {
       memoryContext,
       attachmentSearch: this.attachmentService?.search.bind(this.attachmentService)
     });
-    const answer = await agent.answer(question);
+    const answer = await agent.answer(question, "auto", stream);
     if (this.sessionService) {
       await this.sessionService.appendExchange(question, answer.content);
       await this.persistSessionState();
     }
     return { ...answer, intent: "answer" };
+  }
+
+  /**
+   * Same contract as {@link answer}, but pushes progressive text to the renderer
+   * while the model is still writing. Non-answer intents simply produce no deltas.
+   */
+  async answerStream(
+    question: string,
+    context: DesktopAgentRequestContext,
+    runId: string,
+    sender: WebContents
+  ): Promise<DesktopAgentResponse> {
+    const controller = new AbortController();
+    this.activeAnswerStreams.set(runId, controller);
+    const emit = (event: DesktopAgentStreamEvent): void => {
+      if (!sender.isDestroyed()) {
+        sender.send("agent:answer-stream-event", event);
+      }
+    };
+    try {
+      const response = await this.answer(question, context, {
+        onDelta: (text) => emit({ runId, type: "delta", text }),
+        onReset: () => emit({ runId, type: "reset" }),
+        signal: controller.signal
+      });
+      emit({ runId, type: "done" });
+      return response;
+    } catch (error) {
+      emit({
+        runId,
+        type: "error",
+        message: error instanceof Error ? error.message : String(error),
+        cancelled: error instanceof StreamCancelledError
+      });
+      throw error;
+    } finally {
+      this.activeAnswerStreams.delete(runId);
+    }
+  }
+
+  cancelAnswerStream(runId: string): void {
+    this.activeAnswerStreams.get(runId)?.abort();
   }
 
   private async executeIntent(
@@ -948,6 +1000,12 @@ ipcMain.handle("workspace:get", () => workspace.getState());
 ipcMain.handle("provider:get-status", () => getProviderStatus());
 ipcMain.handle("provider:open-config", () => openDesktopEnvFile());
 ipcMain.handle("agent:answer", (_event, question: string, context: DesktopAgentRequestContext | undefined) => workspace.answer(question, context));
+ipcMain.handle(
+  "agent:answer-stream",
+  (event, question: string, context: DesktopAgentRequestContext | undefined, runId: string) =>
+    workspace.answerStream(question, context ?? {}, runId ?? "", event.sender)
+);
+ipcMain.handle("agent:answer-cancel", (_event, runId: string) => workspace.cancelAnswerStream(runId ?? ""));
 ipcMain.handle("answer:save", (_event, action, subject, content, sources) => workspace.saveAnswer(action, subject, content, sources));
 ipcMain.handle("wiki:create-update-preview", (_event, id: string) => workspace.createWikiUpdatePreview(id));
 ipcMain.handle("knowledge:search", (_event, query: string) => workspace.search(query));

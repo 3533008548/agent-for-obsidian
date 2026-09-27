@@ -1,4 +1,4 @@
-import { FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import type {
   AgentRunView,
   DesktopAgentSource,
@@ -46,6 +46,8 @@ export function App() {
   ]);
   const [input, setInput] = useState("");
   const [isSearching, setIsSearching] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [isCreatingWikiUpdate, setIsCreatingWikiUpdate] = useState(false);
   const [run, setRun] = useState<AgentRunView | null>(null);
   const [writePreviews, setWritePreviews] = useState<WritePreviewView[]>([]);
@@ -57,6 +59,8 @@ export function App() {
   const [isExplorerCollapsed, setIsExplorerCollapsed] = useState(false);
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(() => new Set());
   const bottomRef = useRef<HTMLDivElement>(null);
+  const activeStreamRef = useRef<{ runId: string; messageId: string } | null>(null);
+  const stopRequestedRef = useRef(false);
 
   useEffect(() => {
     if (!api) {
@@ -241,23 +245,43 @@ export function App() {
     setInput("");
     setIsSearching(true);
     setMessages((current) => [...current, { id: "user-" + Date.now(), role: "user", text: query }]);
+    if (!api) {
+      setIsSearching(false);
+      return;
+    }
+
+    const messageId = "result-" + Date.now();
+    const runId = "run-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+    const canStream = typeof api.askAgentStream === "function";
+    if (canStream) {
+      activeStreamRef.current = { runId, messageId };
+      stopRequestedRef.current = false;
+      setIsStreaming(true);
+      setStreamingMessageId(messageId);
+      setMessages((current) => [...current, { id: messageId, role: "agent", text: "" }]);
+    }
     try {
-      if (!api) {
-        return;
-      }
-      const answer = await api.askAgent(query, { activeNotePath: selectedNotePath ?? undefined });
-      setMessages((current) => [
-        ...current,
-        {
-          id: "result-" + Date.now(),
-          role: "agent",
-          text: answer.content,
-          results: answer.sources,
-          recoveryNote: answer.recoveryNote,
-          question: answer.intent === "answer" ? query : undefined,
-          wikiVerification: answer.wikiVerification
-        }
-      ]);
+      const request = { activeNotePath: selectedNotePath ?? undefined };
+      const answer = canStream
+        ? await api.askAgentStream(query, request, runId)
+        : await api.askAgent(query, request);
+      const wasStopped = stopRequestedRef.current;
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === messageId
+            ? {
+                ...message,
+                text: answer.content,
+                results: answer.sources,
+                recoveryNote: wasStopped
+                  ? "已停止生成，以上是已产生的部分。"
+                  : answer.recoveryNote,
+                question: answer.intent === "answer" ? query : undefined,
+                wikiVerification: answer.wikiVerification
+              }
+            : message
+        )
+      );
       if (answer.intent && answer.intent !== "answer") {
         setWorkspace(await api.getWorkspace());
         await refreshNotes();
@@ -269,8 +293,23 @@ export function App() {
         await previewSource(answer.assistantStatePath);
       }
     } catch (error) {
-      appendError(error);
+      if (stopRequestedRef.current) {
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === messageId
+              ? { ...message, recoveryNote: "已停止生成，以上是已产生的部分。" }
+              : message
+          )
+        );
+      } else {
+        setMessages((current) => current.filter((message) => message.id !== messageId));
+        appendError(error);
+      }
     } finally {
+      activeStreamRef.current = null;
+      stopRequestedRef.current = false;
+      setIsStreaming(false);
+      setStreamingMessageId(null);
       setIsSearching(false);
     }
   }
@@ -373,6 +412,43 @@ export function App() {
     ]);
   }
 
+  useEffect(() => {
+    if (!api?.onAgentStreamEvent) {
+      return;
+    }
+    return api.onAgentStreamEvent((event) => {
+      const active = activeStreamRef.current;
+      if (!active || event.runId !== active.runId) {
+        return;
+      }
+      if (event.type === "delta") {
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === active.messageId ? { ...message, text: message.text + event.text } : message
+          )
+        );
+      } else if (event.type === "reset") {
+        // The answer switched to a different source; drop the stale partial text.
+        setMessages((current) =>
+          current.map((message) => (message.id === active.messageId ? { ...message, text: "" } : message))
+        );
+      }
+    });
+  }, [api]);
+
+  const stopStreaming = useCallback(async (): Promise<void> => {
+    const active = activeStreamRef.current;
+    if (!active || !api) {
+      return;
+    }
+    stopRequestedRef.current = true;
+    await api.cancelAgentStream(active.runId);
+  }, [api]);
+
+  const hasStreamedText =
+    streamingMessageId !== null &&
+    (messages.find((message) => message.id === streamingMessageId)?.text ?? "") !== "";
+
   if (!api) {
     return (
       <main className="loading-fallback">
@@ -437,7 +513,10 @@ export function App() {
         {messages.map((message) => (
           <article key={message.id} className={"message " + message.role + " " + (message.tone ?? "")}>
             <span className="message-label">{message.role === "agent" ? "知识助手" : "你"}</span>
-            <p>{message.text}</p>
+            <p>
+              {message.text}
+              {message.id === streamingMessageId ? <span className="stream-cursor" aria-hidden="true" /> : null}
+            </p>
             {message.recoveryNote ? <p className="recovery-note">{message.recoveryNote}</p> : null}
             {message.results?.length ? (
               <div className="sources">
@@ -508,7 +587,7 @@ export function App() {
             ) : null}
           </article>
         ))}
-        {isSearching ? (
+        {isSearching && !hasStreamedText ? (
           <article className="message agent loading">
             <span className="message-label">知识助手</span>
             <p>正在判断请求并执行必要操作…</p>
@@ -607,6 +686,11 @@ export function App() {
         <button type="submit" disabled={!input.trim() || isSearching || isCreatingWikiUpdate}>
           发送
         </button>
+        {isStreaming ? (
+          <button type="button" className="composer-stop" onClick={() => void stopStreaming()}>
+            停止生成
+          </button>
+        ) : null}
         <button
           type="button"
           className="composer-plan"

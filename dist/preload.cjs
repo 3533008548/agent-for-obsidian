@@ -9,6 +9,15 @@ var api = {
   getProviderStatus: () => import_electron.ipcRenderer.invoke("provider:get-status"),
   openModelConfig: () => import_electron.ipcRenderer.invoke("provider:open-config"),
   askAgent: (question, context) => import_electron.ipcRenderer.invoke("agent:answer", question, context),
+  askAgentStream: (question, context, runId) => import_electron.ipcRenderer.invoke("agent:answer-stream", question, context, runId),
+  cancelAgentStream: (runId) => import_electron.ipcRenderer.invoke("agent:answer-cancel", runId),
+  onAgentStreamEvent: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    import_electron.ipcRenderer.on("agent:answer-stream-event", wrapped);
+    return () => {
+      import_electron.ipcRenderer.removeListener("agent:answer-stream-event", wrapped);
+    };
+  },
   saveAnswer: (action, subject, content, sources) => import_electron.ipcRenderer.invoke("answer:save", action, subject, content, sources),
   createWikiUpdatePreview: (id) => import_electron.ipcRenderer.invoke("wiki:create-update-preview", id),
   search: (query) => import_electron.ipcRenderer.invoke("knowledge:search", query),

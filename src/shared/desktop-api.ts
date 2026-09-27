@@ -149,6 +149,13 @@ export interface WritePreviewView {
   afterContent: string;
 }
 
+/** Progressive events emitted while an answer is being generated. */
+export type DesktopAgentStreamEvent =
+  | { runId: string; type: "delta"; text: string }
+  | { runId: string; type: "reset" }
+  | { runId: string; type: "done" }
+  | { runId: string; type: "error"; message: string; cancelled: boolean };
+
 export interface DesktopApi {
   chooseWorkspace(): Promise<WorkspaceState | null>;
   migrateObsidianVault(): Promise<ObsidianMigrationState | null>;
@@ -156,6 +163,18 @@ export interface DesktopApi {
   getProviderStatus(): Promise<ProviderStatus>;
   openModelConfig(): Promise<void>;
   askAgent(question: string, context?: DesktopAgentRequestContext): Promise<DesktopAgentResponse>;
+  /** Streams an answer, returning once the full response is available. */
+  askAgentStream(
+    question: string,
+    context: DesktopAgentRequestContext | undefined,
+    runId: string
+  ): Promise<DesktopAgentResponse>;
+  /** Aborts an in-flight streamed answer. */
+  cancelAgentStream(runId: string): Promise<void>;
+  /** Subscribes to stream events; returns an unsubscribe function. */
+  onAgentStreamEvent(
+    listener: (event: DesktopAgentStreamEvent) => void
+  ): () => void;
   saveAnswer(action: DesktopCaptureAction, subject: string, content: string, sources: DesktopAgentSource[]): Promise<DesktopWriteResult>;
   createWikiUpdatePreview(id: string): Promise<DesktopWikiUpdatePreview[]>;
   search(query: string): Promise<DesktopSearchHit[]>;
