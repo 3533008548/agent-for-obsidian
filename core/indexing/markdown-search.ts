@@ -1,3 +1,4 @@
+import { MarkdownBm25Corpus, fileNameOf, tokenizeForSearch } from "./bm25";
 import type { MarkdownChunk } from "./markdown-parser";
 
 export interface MarkdownSearchResult {
@@ -6,10 +7,34 @@ export interface MarkdownSearchResult {
   excerpt: string;
 }
 
+/**
+ * Bonus for chunks that contain the whole query verbatim. BM25 scores terms
+ * independently, so an exact phrase still needs a small nudge to outrank a
+ * chunk that merely shares more bigrams with the question.
+ */
+const PHRASE_BONUS = {
+  content: 1.5,
+  heading: 1,
+  fileName: 0.8
+} as const;
+
+/**
+ * Rank chunks against a query.
+ *
+ * Scoring is BM25 over a pseudo-document per chunk (body + heading + file
+ * name), which replaces the previous fixed per-hit weights: repeated terms
+ * saturate, long chunks are normalised, and terms that appear everywhere are
+ * discounted by IDF.
+ *
+ * `corpus` carries the IDF statistics. Callers that keep a long-lived index
+ * should build it once and pass it in; when omitted it is derived from
+ * `chunks`, which is correct but re-tokenises everything on every query.
+ */
 export function searchMarkdownChunks(
   chunks: MarkdownChunk[],
   query: string,
-  limit = 8
+  limit = 8,
+  corpus: MarkdownBm25Corpus = new MarkdownBm25Corpus(chunks)
 ): MarkdownSearchResult[] {
   const normalizedQuery = query.trim().toLocaleLowerCase();
   if (!normalizedQuery) {
@@ -18,39 +43,35 @@ export function searchMarkdownChunks(
 
   const terms = extractSearchTerms(normalizedQuery);
   const requiredTerms = extractRequiredTerms(normalizedQuery);
-  const ranked = chunks
-    .map((chunk) => {
-      const haystack = chunk.content.toLocaleLowerCase();
-      const heading = (chunk.heading ?? "").toLocaleLowerCase();
-      const fileName = getFileName(chunk.source.pathOrUrl).toLocaleLowerCase();
-      let score = 0;
+  const ranked: MarkdownSearchResult[] = [];
 
-      if (haystack.includes(normalizedQuery)) {
-        score += 12;
-      }
-      if (heading.includes(normalizedQuery)) {
-        score += 20;
-      }
-      if (fileName.includes(normalizedQuery)) {
-        score += 16;
-      }
+  for (const chunk of chunks) {
+    const haystack = chunk.content.toLocaleLowerCase();
+    const heading = (chunk.heading ?? "").toLocaleLowerCase();
+    const fileName = fileNameOf(chunk.source.pathOrUrl).toLocaleLowerCase();
+    const searchableText = `${haystack}\n${heading}\n${fileName}`;
 
-      for (const term of terms) {
-        score += countOccurrences(haystack, term) * 2;
-        score += countOccurrences(heading, term) * 5;
-        score += countOccurrences(fileName, term) * (term.length >= 3 ? 18 : 6);
-      }
+    if (!requiredTerms.every((term) => searchableText.includes(term))) {
+      continue;
+    }
 
-      return {
-        chunk,
-        score,
-        excerpt: createExcerpt(chunk.content, normalizedQuery, terms),
-        matchesRequiredTerms: requiredTerms.every((term) => `${haystack}\n${heading}\n${fileName}`.includes(term))
-      };
-    })
-    .filter((result) => result.score > 0 && result.matchesRequiredTerms)
-    .map(({ matchesRequiredTerms: _matchesRequiredTerms, ...result }) => result)
-    .sort((left, right) => right.score - left.score || left.chunk.source.pathOrUrl.localeCompare(right.chunk.source.pathOrUrl));
+    const score = corpus.score(chunk, terms) + phraseBonus(normalizedQuery, haystack, heading, fileName);
+    if (score <= 0) {
+      continue;
+    }
+
+    ranked.push({
+      chunk,
+      score,
+      excerpt: createExcerpt(chunk.content, normalizedQuery, terms)
+    });
+  }
+
+  ranked.sort(
+    (left, right) =>
+      right.score - left.score ||
+      left.chunk.source.pathOrUrl.localeCompare(right.chunk.source.pathOrUrl)
+  );
   return selectDiverseSearchResults(ranked, limit);
 }
 
@@ -75,12 +96,9 @@ export function selectDiverseSearchResults(
 }
 
 function extractSearchTerms(query: string): string[] {
-  const terms = new Set(query.match(/[a-z0-9][a-z0-9._-]*/gu) ?? []);
+  const terms = new Set(tokenizeForSearch(query));
   for (const run of query.match(/[\u3400-\u9fff]{2,}/gu) ?? []) {
     terms.add(run);
-    for (let index = 0; index < run.length - 1; index += 1) {
-      terms.add(run.slice(index, index + 2));
-    }
   }
   return [...terms];
 }
@@ -91,24 +109,23 @@ function extractRequiredTerms(query: string): string[] {
     .filter((term) => !stopWords.has(term));
 }
 
-function getFileName(path: string): string {
-  const segments = path.replace(/\\/gu, "/").split("/");
-  const name = segments[segments.length - 1] ?? path;
-  return name.replace(/\.md$/iu, "");
-}
-
-function countOccurrences(text: string, term: string): number {
-  if (!term) {
-    return 0;
+function phraseBonus(
+  query: string,
+  haystack: string,
+  heading: string,
+  fileName: string
+): number {
+  let bonus = 0;
+  if (haystack.includes(query)) {
+    bonus += PHRASE_BONUS.content;
   }
-
-  let count = 0;
-  let index = text.indexOf(term);
-  while (index >= 0) {
-    count += 1;
-    index = text.indexOf(term, index + term.length);
+  if (heading.includes(query)) {
+    bonus += PHRASE_BONUS.heading;
   }
-  return count;
+  if (fileName.includes(query)) {
+    bonus += PHRASE_BONUS.fileName;
+  }
+  return bonus;
 }
 
 function createExcerpt(content: string, query: string, terms: string[]): string {

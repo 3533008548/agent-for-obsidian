@@ -1,6 +1,7 @@
 import type { KnowledgeFile, KnowledgeRepository } from "../core/knowledge-repository";
 import type { PolicyEngine } from "../policy/policy-engine";
 import { MARKDOWN_PARSER_VERSION, parseMarkdownIntoChunks, type MarkdownChunk } from "./markdown-parser";
+import { MarkdownBm25Corpus } from "./bm25";
 import { searchMarkdownChunks, type MarkdownSearchResult } from "./markdown-search";
 import {
   MARKDOWN_INDEX_SNAPSHOT_VERSION,
@@ -45,6 +46,8 @@ export interface PortableMarkdownKnowledgeIndexOptions {
  */
 export class PortableMarkdownKnowledgeIndex {
   private entries = new Map<string, IndexEntry>();
+  /** IDF statistics for `search()`, rebuilt lazily whenever chunks change. */
+  private corpus: MarkdownBm25Corpus | null = null;
 
   constructor(
     private readonly repository: KnowledgeRepository,
@@ -73,6 +76,7 @@ export class PortableMarkdownKnowledgeIndex {
     }
 
     this.entries = entries;
+    this.corpus = null;
     await this.persist();
     return this.toSummary(indexedFiles, skippedFiles, 0);
   }
@@ -112,6 +116,7 @@ export class PortableMarkdownKnowledgeIndex {
     }
 
     this.entries = entries;
+    this.corpus = null;
     if (hasSnapshotChanged(previous, entries)) {
       await this.persist();
     }
@@ -146,6 +151,7 @@ export class PortableMarkdownKnowledgeIndex {
       size: file.size,
       chunks: parseMarkdownIntoChunks(file.path, content)
     });
+    this.corpus = null;
     return true;
   }
 
@@ -155,11 +161,14 @@ export class PortableMarkdownKnowledgeIndex {
   }
 
   remove(path: string): void {
-    this.entries.delete(path);
+    if (this.entries.delete(path)) {
+      this.corpus = null;
+    }
   }
 
   clear(): void {
     this.entries.clear();
+    this.corpus = null;
   }
 
   has(path: string): boolean {
@@ -167,7 +176,7 @@ export class PortableMarkdownKnowledgeIndex {
   }
 
   search(query: string, limit = 8): MarkdownSearchResult[] {
-    return searchMarkdownChunks(this.getAllChunks(), query, limit);
+    return searchMarkdownChunks(this.getAllChunks(), query, limit, this.currentCorpus());
   }
 
   getForPath(path: string): MarkdownChunk[] {
@@ -234,6 +243,13 @@ export class PortableMarkdownKnowledgeIndex {
 
   private getAllChunks(): MarkdownChunk[] {
     return [...this.entries.values()].flatMap((entry) => entry.chunks);
+  }
+
+  private currentCorpus(): MarkdownBm25Corpus {
+    if (!this.corpus) {
+      this.corpus = new MarkdownBm25Corpus(this.getAllChunks());
+    }
+    return this.corpus;
   }
 
   private canIndex(file: KnowledgeFile, policy: PolicyEngine): boolean {

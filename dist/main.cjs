@@ -463,42 +463,143 @@ ${paragraph}` : paragraph;
   return chunks;
 }
 
+// core/indexing/bm25.ts
+var K1 = 1.2;
+var LENGTH_NORMALISATION = 0.75;
+var FIELD_WEIGHTS = {
+  content: 1,
+  heading: 2,
+  fileName: 3
+};
+function tokenizeForSearch(text) {
+  const normalized = text.toLocaleLowerCase();
+  const tokens = [];
+  for (const word of normalized.match(/[a-z0-9]+/gu) ?? []) {
+    tokens.push(word);
+  }
+  for (const run of normalized.match(/[\u3400-\u9fff]+/gu) ?? []) {
+    if (run.length === 1) {
+      tokens.push(run);
+      continue;
+    }
+    for (let index = 0; index < run.length - 1; index += 1) {
+      tokens.push(run.slice(index, index + 2));
+    }
+  }
+  return tokens;
+}
+function fileNameOf(pathOrUrl) {
+  const segments = pathOrUrl.replace(/\\/gu, "/").split("/");
+  const name = segments[segments.length - 1] ?? pathOrUrl;
+  return name.replace(/\.md$/iu, "");
+}
+var MarkdownBm25Corpus = class {
+  cache = /* @__PURE__ */ new WeakMap();
+  stats;
+  constructor(chunks) {
+    const documentFrequency = /* @__PURE__ */ new Map();
+    let totalLength = 0;
+    for (const chunk of chunks) {
+      const { frequencies, length } = this.frequenciesOf(chunk);
+      totalLength += length;
+      for (const term of frequencies.keys()) {
+        documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
+      }
+    }
+    this.stats = {
+      documentCount: chunks.length,
+      averageLength: chunks.length ? totalLength / chunks.length : 0,
+      documentFrequency
+    };
+  }
+  get documentCount() {
+    return this.stats.documentCount;
+  }
+  idfOf(term) {
+    const documentFrequency = this.stats.documentFrequency.get(term) ?? 0;
+    if (!documentFrequency) {
+      return 0;
+    }
+    const { documentCount } = this.stats;
+    return Math.log(1 + (documentCount - documentFrequency + 0.5) / (documentFrequency + 0.5));
+  }
+  score(chunk, terms) {
+    const { frequencies, length } = this.frequenciesOf(chunk);
+    if (!length) {
+      return 0;
+    }
+    const normalisation = 1 - LENGTH_NORMALISATION + LENGTH_NORMALISATION * (length / (this.stats.averageLength || 1));
+    let score = 0;
+    for (const term of terms) {
+      const frequency = frequencies.get(term);
+      if (!frequency) {
+        continue;
+      }
+      score += this.idfOf(term) * (frequency * (K1 + 1)) / (frequency + K1 * normalisation);
+    }
+    return score;
+  }
+  frequenciesOf(chunk) {
+    const cached = this.cache.get(chunk);
+    if (cached) {
+      return cached;
+    }
+    const frequencies = /* @__PURE__ */ new Map();
+    const add = (text, weight) => {
+      for (const token of tokenizeForSearch(text)) {
+        frequencies.set(token, (frequencies.get(token) ?? 0) + weight);
+      }
+    };
+    add(chunk.content, FIELD_WEIGHTS.content);
+    add(chunk.heading ?? "", FIELD_WEIGHTS.heading);
+    add(fileNameOf(chunk.source.pathOrUrl), FIELD_WEIGHTS.fileName);
+    let length = 0;
+    for (const frequency of frequencies.values()) {
+      length += frequency;
+    }
+    const entry = { frequencies, length };
+    this.cache.set(chunk, entry);
+    return entry;
+  }
+};
+
 // core/indexing/markdown-search.ts
-function searchMarkdownChunks(chunks, query, limit = 8) {
+var PHRASE_BONUS = {
+  content: 1.5,
+  heading: 1,
+  fileName: 0.8
+};
+function searchMarkdownChunks(chunks, query, limit = 8, corpus = new MarkdownBm25Corpus(chunks)) {
   const normalizedQuery = query.trim().toLocaleLowerCase();
   if (!normalizedQuery) {
     return [];
   }
   const terms = extractSearchTerms(normalizedQuery);
   const requiredTerms = extractRequiredTerms(normalizedQuery);
-  const ranked = chunks.map((chunk) => {
+  const ranked = [];
+  for (const chunk of chunks) {
     const haystack = chunk.content.toLocaleLowerCase();
     const heading = (chunk.heading ?? "").toLocaleLowerCase();
-    const fileName = getFileName(chunk.source.pathOrUrl).toLocaleLowerCase();
-    let score = 0;
-    if (haystack.includes(normalizedQuery)) {
-      score += 12;
+    const fileName = fileNameOf(chunk.source.pathOrUrl).toLocaleLowerCase();
+    const searchableText = `${haystack}
+${heading}
+${fileName}`;
+    if (!requiredTerms.every((term) => searchableText.includes(term))) {
+      continue;
     }
-    if (heading.includes(normalizedQuery)) {
-      score += 20;
+    const score = corpus.score(chunk, terms) + phraseBonus(normalizedQuery, haystack, heading, fileName);
+    if (score <= 0) {
+      continue;
     }
-    if (fileName.includes(normalizedQuery)) {
-      score += 16;
-    }
-    for (const term of terms) {
-      score += countOccurrences(haystack, term) * 2;
-      score += countOccurrences(heading, term) * 5;
-      score += countOccurrences(fileName, term) * (term.length >= 3 ? 18 : 6);
-    }
-    return {
+    ranked.push({
       chunk,
       score,
-      excerpt: createExcerpt(chunk.content, normalizedQuery, terms),
-      matchesRequiredTerms: requiredTerms.every((term) => `${haystack}
-${heading}
-${fileName}`.includes(term))
-    };
-  }).filter((result) => result.score > 0 && result.matchesRequiredTerms).map(({ matchesRequiredTerms: _matchesRequiredTerms, ...result }) => result).sort((left, right) => right.score - left.score || left.chunk.source.pathOrUrl.localeCompare(right.chunk.source.pathOrUrl));
+      excerpt: createExcerpt(chunk.content, normalizedQuery, terms)
+    });
+  }
+  ranked.sort(
+    (left, right) => right.score - left.score || left.chunk.source.pathOrUrl.localeCompare(right.chunk.source.pathOrUrl)
+  );
   return selectDiverseSearchResults(ranked, limit);
 }
 function selectDiverseSearchResults(results, limit = 8) {
@@ -517,12 +618,9 @@ function selectDiverseSearchResults(results, limit = 8) {
   return [...distinctPaths, ...remaining].slice(0, limit);
 }
 function extractSearchTerms(query) {
-  const terms = new Set(query.match(/[a-z0-9][a-z0-9._-]*/gu) ?? []);
+  const terms = new Set(tokenizeForSearch(query));
   for (const run of query.match(/[\u3400-\u9fff]{2,}/gu) ?? []) {
     terms.add(run);
-    for (let index = 0; index < run.length - 1; index += 1) {
-      terms.add(run.slice(index, index + 2));
-    }
   }
   return [...terms];
 }
@@ -530,22 +628,18 @@ function extractRequiredTerms(query) {
   const stopWords = /* @__PURE__ */ new Set(["a", "an", "are", "do", "does", "how", "is", "of", "the", "to", "what", "why"]);
   return [...new Set(query.match(/[a-z][a-z0-9._-]{2,}/gu) ?? [])].filter((term) => !stopWords.has(term));
 }
-function getFileName(path) {
-  const segments = path.replace(/\\/gu, "/").split("/");
-  const name = segments[segments.length - 1] ?? path;
-  return name.replace(/\.md$/iu, "");
-}
-function countOccurrences(text, term) {
-  if (!term) {
-    return 0;
+function phraseBonus(query, haystack, heading, fileName) {
+  let bonus = 0;
+  if (haystack.includes(query)) {
+    bonus += PHRASE_BONUS.content;
   }
-  let count = 0;
-  let index = text.indexOf(term);
-  while (index >= 0) {
-    count += 1;
-    index = text.indexOf(term, index + term.length);
+  if (heading.includes(query)) {
+    bonus += PHRASE_BONUS.heading;
   }
-  return count;
+  if (fileName.includes(query)) {
+    bonus += PHRASE_BONUS.fileName;
+  }
+  return bonus;
 }
 function createExcerpt(content, query, terms) {
   const flattened = content.replace(/\s+/g, " ").trim();
@@ -567,6 +661,8 @@ var PortableMarkdownKnowledgeIndex = class {
   isExcludedPath;
   options;
   entries = /* @__PURE__ */ new Map();
+  /** IDF statistics for `search()`, rebuilt lazily whenever chunks change. */
+  corpus = null;
   /** Re-read and re-parse everything, ignoring any snapshot. */
   async rebuild(policy) {
     const files = await this.repository.listMarkdownFiles();
@@ -586,6 +682,7 @@ var PortableMarkdownKnowledgeIndex = class {
       indexedFiles += 1;
     }
     this.entries = entries;
+    this.corpus = null;
     await this.persist();
     return this.toSummary(indexedFiles, skippedFiles, 0);
   }
@@ -620,6 +717,7 @@ var PortableMarkdownKnowledgeIndex = class {
       indexedFiles += 1;
     }
     this.entries = entries;
+    this.corpus = null;
     if (hasSnapshotChanged(previous, entries)) {
       await this.persist();
     }
@@ -651,6 +749,7 @@ var PortableMarkdownKnowledgeIndex = class {
       size: file.size,
       chunks: parseMarkdownIntoChunks(file.path, content)
     });
+    this.corpus = null;
     return true;
   }
   /** Write current state to the snapshot store, if one is configured. */
@@ -658,16 +757,19 @@ var PortableMarkdownKnowledgeIndex = class {
     await this.persist();
   }
   remove(path) {
-    this.entries.delete(path);
+    if (this.entries.delete(path)) {
+      this.corpus = null;
+    }
   }
   clear() {
     this.entries.clear();
+    this.corpus = null;
   }
   has(path) {
     return this.entries.has(path);
   }
   search(query, limit = 8) {
-    return searchMarkdownChunks(this.getAllChunks(), query, limit);
+    return searchMarkdownChunks(this.getAllChunks(), query, limit, this.currentCorpus());
   }
   getForPath(path) {
     return [...this.entries.get(path)?.chunks ?? []];
@@ -721,6 +823,12 @@ var PortableMarkdownKnowledgeIndex = class {
   }
   getAllChunks() {
     return [...this.entries.values()].flatMap((entry) => entry.chunks);
+  }
+  currentCorpus() {
+    if (!this.corpus) {
+      this.corpus = new MarkdownBm25Corpus(this.getAllChunks());
+    }
+    return this.corpus;
   }
   canIndex(file, policy) {
     if (file.extension.toLocaleLowerCase() !== "md" || this.isExcludedPath(file.path)) {

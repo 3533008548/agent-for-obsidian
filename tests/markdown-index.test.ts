@@ -67,9 +67,14 @@ describe("Markdown parsing and search", () => {
       "daily/其他 Agent 笔记.md",
       "# Agent\n\n本文提到 langgraph。"
     );
+    // IDF needs a corpus to be meaningful: "笔记" only stops dominating the
+    // query once it appears in several other file names.
+    const filler = [0, 1, 2, 3, 4, 5].flatMap((index) =>
+      parseMarkdownIntoChunks(`daily/读书笔记${index}.md`, "# 摘要\n\n随便写点内容。")
+    );
 
     const results = searchMarkdownChunks(
-      [...fileNameMatch, ...contentOnlyMatch],
+      [...fileNameMatch, ...contentOnlyMatch, ...filler],
       "整理LangGraph相关笔记"
     );
 
@@ -108,6 +113,21 @@ describe("Markdown parsing and search", () => {
       size: 0
     }, policy)).resolves.toBe(true);
     expect(index.search("langgraph")).toHaveLength(1);
+  });
+
+  it("ranks new content after re-indexing a note without a full rebuild", async () => {
+    const contents = new Map<string, string>([["daily/甲.md", "# 甲\n\n内容一。"]]);
+    const index = new PortableMarkdownKnowledgeIndex(new MemoryKnowledgeRepository(contents));
+    const policy = new PolicyEngine(createDefaultPermissionPolicy());
+
+    await index.rebuild(policy);
+    index.refreshContent(
+      { path: "daily/甲.md", extension: "md", mtime: 2, size: 0 },
+      "# 甲\n\n新术语 zettelkasten。",
+      policy
+    );
+
+    expect(index.search("zettelkasten")[0]?.chunk.source.pathOrUrl).toBe("daily/甲.md");
   });
 
   it("rebuilds from the repository and reports a summary", async () => {
