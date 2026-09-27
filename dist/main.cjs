@@ -2,8 +2,8 @@
 
 // src/main.ts
 var import_electron = require("electron");
-var import_promises3 = require("node:fs/promises");
-var import_node_path3 = require("node:path");
+var import_promises4 = require("node:fs/promises");
+var import_node_path4 = require("node:path");
 
 // core/policy/policy-engine.ts
 function createDefaultPermissionPolicy() {
@@ -247,6 +247,126 @@ function isMissingFileError(error) {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
 }
 
+// core/desktop/node-markdown-index-store.ts
+var import_promises2 = require("node:fs/promises");
+var import_node_path2 = require("node:path");
+
+// core/indexing/markdown-index-snapshot.ts
+var MARKDOWN_INDEX_SNAPSHOT_VERSION = 1;
+function fingerprintOf(file) {
+  return `${file.mtime}:${file.size}`;
+}
+function isUsableSnapshot(snapshot, parserVersion, rootPath) {
+  if (!snapshot) {
+    return false;
+  }
+  return snapshot.version === MARKDOWN_INDEX_SNAPSHOT_VERSION && snapshot.parserVersion === parserVersion && snapshot.rootPath === rootPath;
+}
+function parseSnapshot(raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed) || typeof parsed.version !== "number" || typeof parsed.parserVersion !== "string") {
+    return null;
+  }
+  if (typeof parsed.rootPath !== "string" || !isRecord(parsed.files)) {
+    return null;
+  }
+  const files = {};
+  for (const [path, value] of Object.entries(parsed.files)) {
+    const entry = asSnapshotFile(value);
+    if (entry) {
+      files[path] = entry;
+    }
+  }
+  return {
+    version: parsed.version,
+    parserVersion: parsed.parserVersion,
+    rootPath: parsed.rootPath,
+    files
+  };
+}
+function asSnapshotFile(value) {
+  if (!isRecord(value) || typeof value.mtime !== "number" || typeof value.size !== "number") {
+    return null;
+  }
+  if (!Array.isArray(value.chunks)) {
+    return null;
+  }
+  const chunks = [];
+  for (const chunk of value.chunks) {
+    const parsed = asChunk(chunk);
+    if (!parsed) {
+      return null;
+    }
+    chunks.push(parsed);
+  }
+  return { mtime: value.mtime, size: value.size, chunks };
+}
+function asChunk(value) {
+  if (!isRecord(value) || typeof value.content !== "string") {
+    return null;
+  }
+  if (!isRecord(value.source)) {
+    return null;
+  }
+  const { source } = value;
+  if (typeof source.pathOrUrl !== "string" || typeof source.locator !== "string" || typeof source.contentHash !== "string" || typeof source.parserVersion !== "string" || source.type !== "note" && source.type !== "pdf" && source.type !== "image" && source.type !== "web" && source.type !== "conversation") {
+    return null;
+  }
+  if (value.heading !== null && typeof value.heading !== "string") {
+    return null;
+  }
+  if (!Array.isArray(value.headingPath) || value.headingPath.some((entry) => typeof entry !== "string")) {
+    return null;
+  }
+  if (typeof value.startLine !== "number" || typeof value.endLine !== "number") {
+    return null;
+  }
+  return {
+    source: {
+      type: source.type,
+      pathOrUrl: source.pathOrUrl,
+      locator: source.locator,
+      contentHash: source.contentHash,
+      parserVersion: source.parserVersion,
+      ...typeof source.retrievedAt === "string" ? { retrievedAt: source.retrievedAt } : {}
+    },
+    content: value.content,
+    heading: value.heading,
+    headingPath: value.headingPath,
+    startLine: value.startLine,
+    endLine: value.endLine
+  };
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// core/desktop/node-markdown-index-store.ts
+function createNodeMarkdownIndexStore(filePath) {
+  return {
+    async read() {
+      let raw;
+      try {
+        raw = await (0, import_promises2.readFile)(filePath, "utf8");
+      } catch {
+        return null;
+      }
+      return parseSnapshot(raw);
+    },
+    async write(snapshot) {
+      await (0, import_promises2.mkdir)((0, import_node_path2.dirname)(filePath), { recursive: true });
+      const temporaryPath = `${filePath}.tmp`;
+      await (0, import_promises2.writeFile)(temporaryPath, JSON.stringify(snapshot), "utf8");
+      await (0, import_promises2.rename)(temporaryPath, filePath);
+    }
+  };
+}
+
 // core/domain/content-hash.ts
 function hashText(input) {
   let hash = 2166136261;
@@ -259,7 +379,7 @@ function hashText(input) {
 
 // core/indexing/markdown-parser.ts
 var MAX_CHUNK_CHARACTERS = 2400;
-var PARSER_VERSION = "markdown-v1";
+var MARKDOWN_PARSER_VERSION = "markdown-v1";
 function parseMarkdownIntoChunks(path, markdown) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const chunks = [];
@@ -281,7 +401,7 @@ function parseMarkdownIntoChunks(path, markdown) {
           pathOrUrl: path,
           locator,
           contentHash: hashText(content),
-          parserVersion: PARSER_VERSION
+          parserVersion: MARKDOWN_PARSER_VERSION
         },
         content,
         heading: currentHeading,
@@ -438,30 +558,72 @@ function createExcerpt(content, query, terms) {
 
 // core/indexing/portable-markdown-knowledge-index.ts
 var PortableMarkdownKnowledgeIndex = class {
-  constructor(repository, isExcludedPath = () => false) {
+  constructor(repository, isExcludedPath = () => false, options = {}) {
     this.repository = repository;
     this.isExcludedPath = isExcludedPath;
+    this.options = options;
   }
   repository;
   isExcludedPath;
-  chunksByPath = /* @__PURE__ */ new Map();
+  options;
+  entries = /* @__PURE__ */ new Map();
+  /** Re-read and re-parse everything, ignoring any snapshot. */
   async rebuild(policy) {
-    this.chunksByPath.clear();
+    const files = await this.repository.listMarkdownFiles();
+    const entries = /* @__PURE__ */ new Map();
     let indexedFiles = 0;
     let skippedFiles = 0;
-    for (const file of await this.repository.listMarkdownFiles()) {
-      const didIndex = await this.refreshFile(file, policy);
-      if (didIndex) {
-        indexedFiles += 1;
-      } else {
+    for (const file of files) {
+      if (!this.canIndex(file, policy)) {
         skippedFiles += 1;
+        continue;
       }
+      entries.set(file.path, {
+        mtime: file.mtime,
+        size: file.size,
+        chunks: parseMarkdownIntoChunks(file.path, await this.repository.readText(file.path))
+      });
+      indexedFiles += 1;
     }
-    return {
-      indexedFiles,
-      skippedFiles,
-      chunkCount: this.getAllChunks().length
-    };
+    this.entries = entries;
+    await this.persist();
+    return this.toSummary(indexedFiles, skippedFiles, 0);
+  }
+  /**
+   * Bring the index in line with the workspace, reusing cached chunks for
+   * files whose `mtime:size` fingerprint is unchanged.
+   */
+  async sync(policy) {
+    const previous = await this.loadSnapshot();
+    const files = await this.repository.listMarkdownFiles();
+    const entries = /* @__PURE__ */ new Map();
+    let indexedFiles = 0;
+    let skippedFiles = 0;
+    let reusedFiles = 0;
+    for (const file of files) {
+      if (!this.canIndex(file, policy)) {
+        skippedFiles += 1;
+        continue;
+      }
+      const cached = previous?.files[file.path];
+      if (cached && fingerprintOf(cached) === fingerprintOf(file)) {
+        entries.set(file.path, { mtime: file.mtime, size: file.size, chunks: cached.chunks });
+        reusedFiles += 1;
+        indexedFiles += 1;
+        continue;
+      }
+      entries.set(file.path, {
+        mtime: file.mtime,
+        size: file.size,
+        chunks: parseMarkdownIntoChunks(file.path, await this.repository.readText(file.path))
+      });
+      indexedFiles += 1;
+    }
+    this.entries = entries;
+    if (hasSnapshotChanged(previous, entries)) {
+      await this.persist();
+    }
+    return this.toSummary(indexedFiles, skippedFiles, reusedFiles);
   }
   async refreshPath(path, policy) {
     const file = await this.repository.getMarkdownFile(path);
@@ -473,6 +635,7 @@ var PortableMarkdownKnowledgeIndex = class {
   }
   async refreshFile(file, policy) {
     if (!this.canIndex(file, policy)) {
+      this.remove(file.path);
       return false;
     }
     const content = await this.repository.readText(file.path);
@@ -480,52 +643,107 @@ var PortableMarkdownKnowledgeIndex = class {
   }
   refreshContent(file, content, policy) {
     if (!this.canIndex(file, policy)) {
+      this.remove(file.path);
       return false;
     }
-    this.chunksByPath.set(file.path, parseMarkdownIntoChunks(file.path, content));
+    this.entries.set(file.path, {
+      mtime: file.mtime,
+      size: file.size,
+      chunks: parseMarkdownIntoChunks(file.path, content)
+    });
     return true;
   }
+  /** Write current state to the snapshot store, if one is configured. */
+  async save() {
+    await this.persist();
+  }
   remove(path) {
-    this.chunksByPath.delete(path);
+    this.entries.delete(path);
   }
   clear() {
-    this.chunksByPath.clear();
+    this.entries.clear();
   }
   has(path) {
-    return this.chunksByPath.has(path);
+    return this.entries.has(path);
   }
   search(query, limit = 8) {
     return searchMarkdownChunks(this.getAllChunks(), query, limit);
   }
   getForPath(path) {
-    return [...this.chunksByPath.get(path) ?? []];
+    return [...this.entries.get(path)?.chunks ?? []];
   }
   getInFolder(folder) {
     const normalizedFolder = folder.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
     if (!normalizedFolder) {
       return [];
     }
-    return [...this.chunksByPath.entries()].filter(([path]) => path.startsWith(`${normalizedFolder}/`)).flatMap(([, chunks]) => chunks);
+    return [...this.entries.entries()].filter(([path]) => path.startsWith(`${normalizedFolder}/`)).flatMap(([, entry]) => entry.chunks);
   }
   get size() {
-    return this.getAllChunks().length;
+    let total = 0;
+    for (const entry of this.entries.values()) {
+      total += entry.chunks.length;
+    }
+    return total;
+  }
+  toSummary(indexedFiles, skippedFiles, reusedFiles) {
+    return { indexedFiles, skippedFiles, chunkCount: this.size, reusedFiles };
+  }
+  async loadSnapshot() {
+    const store = this.options.store;
+    if (!store) {
+      return null;
+    }
+    let snapshot = null;
+    try {
+      snapshot = await store.read();
+    } catch {
+      return null;
+    }
+    const rootPath = this.options.rootPath ?? "";
+    return isUsableSnapshot(snapshot, MARKDOWN_PARSER_VERSION, rootPath) ? snapshot : null;
+  }
+  async persist() {
+    const store = this.options.store;
+    if (!store) {
+      return;
+    }
+    const files = {};
+    for (const [path, entry] of this.entries) {
+      files[path] = { mtime: entry.mtime, size: entry.size, chunks: entry.chunks };
+    }
+    await store.write({
+      version: MARKDOWN_INDEX_SNAPSHOT_VERSION,
+      parserVersion: MARKDOWN_PARSER_VERSION,
+      rootPath: this.options.rootPath ?? "",
+      files
+    });
   }
   getAllChunks() {
-    return [...this.chunksByPath.values()].flat();
+    return [...this.entries.values()].flatMap((entry) => entry.chunks);
   }
   canIndex(file, policy) {
     if (file.extension.toLocaleLowerCase() !== "md" || this.isExcludedPath(file.path)) {
-      this.remove(file.path);
       return false;
     }
-    const decision = policy.decide({ action: "readVault", targetPath: file.path });
-    if (!decision.allowed) {
-      this.remove(file.path);
-      return false;
-    }
-    return true;
+    return policy.decide({ action: "readVault", targetPath: file.path }).allowed;
   }
 };
+function hasSnapshotChanged(previous, entries) {
+  if (!previous) {
+    return true;
+  }
+  if (Object.keys(previous.files).length !== entries.size) {
+    return true;
+  }
+  for (const [path, entry] of entries) {
+    const cached = previous.files[path];
+    if (!cached || fingerprintOf(cached) !== fingerprintOf(entry)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 // core/services/capture-suggestion.ts
 function parseCaptureSuggestion(rawContent) {
@@ -557,7 +775,7 @@ function parseJsonObject(rawContent) {
   const content = rawContent.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   try {
     const parsed = JSON.parse(content);
-    if (!isRecord(parsed)) {
+    if (!isRecord2(parsed)) {
       throw new Error("\u6A21\u578B\u8FD4\u56DE\u7684 JSON \u4E0D\u662F\u5BF9\u8C61\u3002");
     }
     return parsed;
@@ -581,7 +799,7 @@ function readOptionalString(object, key, maxLength) {
   const trimmed = value.trim();
   return trimmed && trimmed.length <= maxLength ? trimmed : null;
 }
-function isRecord(value) {
+function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -691,8 +909,8 @@ async function readSseStream(response, providerName, onDelta) {
       onDelta(content);
     }
     return {
-      requestId: isRecord2(body) && typeof body.id === "string" ? body.id : void 0,
-      model: isRecord2(body) && typeof body.model === "string" ? body.model : void 0
+      requestId: isRecord3(body) && typeof body.id === "string" ? body.id : void 0,
+      model: isRecord3(body) && typeof body.model === "string" ? body.model : void 0
     };
   }
   const reader = response.body.getReader();
@@ -724,7 +942,7 @@ async function readSseStream(response, providerName, onDelta) {
         } catch {
           continue;
         }
-        if (!isRecord2(parsed)) {
+        if (!isRecord3(parsed)) {
           continue;
         }
         if (typeof parsed.id === "string") {
@@ -734,10 +952,10 @@ async function readSseStream(response, providerName, onDelta) {
           model = parsed.model;
         }
         const choice = Array.isArray(parsed.choices) ? parsed.choices[0] : void 0;
-        if (!isRecord2(choice)) {
+        if (!isRecord3(choice)) {
           continue;
         }
-        const delta = isRecord2(choice.delta) ? choice.delta.content : choice.text;
+        const delta = isRecord3(choice.delta) ? choice.delta.content : choice.text;
         if (typeof delta === "string" && delta) {
           onDelta(delta);
         }
@@ -747,14 +965,14 @@ async function readSseStream(response, providerName, onDelta) {
   return { requestId, model };
 }
 function readMessageContent(body) {
-  if (!isRecord2(body)) {
+  if (!isRecord3(body)) {
     return "";
   }
   if (!Array.isArray(body.choices)) {
     return "";
   }
   const choice = body.choices[0];
-  if (!isRecord2(choice) || !isRecord2(choice.message)) {
+  if (!isRecord3(choice) || !isRecord3(choice.message)) {
     return "";
   }
   return typeof choice.message.content === "string" ? choice.message.content : "";
@@ -767,10 +985,10 @@ function parseJsonResponse(rawBody, providerName) {
   }
 }
 function getErrorMessage(value) {
-  if (!isRecord2(value)) {
+  if (!isRecord3(value)) {
     return null;
   }
-  const nested = isRecord2(value.error) && typeof value.error.message === "string" ? value.error.message.trim() : "";
+  const nested = isRecord3(value.error) && typeof value.error.message === "string" ? value.error.message.trim() : "";
   if (nested) {
     return nested;
   }
@@ -781,7 +999,7 @@ function getErrorMessage(value) {
   }
   return null;
 }
-function isRecord2(value) {
+function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -1022,7 +1240,7 @@ function parseKnowledgeMap(rawContent, allowedSourceIds) {
   }
   const usedNodeIds = /* @__PURE__ */ new Set();
   const nodes = rawNodes.map((rawNode, index) => {
-    if (!isRecord3(rawNode)) {
+    if (!isRecord4(rawNode)) {
       throw new Error(`\u77E5\u8BC6\u5730\u56FE\u7684\u7B2C ${index + 1} \u4E2A\u8282\u70B9\u4E0D\u662F\u5BF9\u8C61\u3002`);
     }
     const id = readRequiredString2(rawNode, "id", 80, "\u77E5\u8BC6\u8282\u70B9");
@@ -1115,7 +1333,7 @@ function parseJsonObject2(rawContent, label) {
   const content = rawContent.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "");
   try {
     const parsed = JSON.parse(content);
-    if (!isRecord3(parsed)) {
+    if (!isRecord4(parsed)) {
       throw new Error("JSON \u4E0D\u662F\u5BF9\u8C61\u3002");
     }
     return parsed;
@@ -1155,7 +1373,7 @@ function compactText(value, maxLength) {
 function formatPriority(priority) {
   return priority === "high" ? "\u4F18\u5148\u6574\u5408" : priority === "low" ? "\u53EF\u540E\u7EED\u5C55\u5F00" : "\u5EFA\u8BAE\u6574\u5408";
 }
-function isRecord3(value) {
+function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -1247,7 +1465,7 @@ ${block}
 `;
 }
 function parseRelation(value, index, allowedSourceIds) {
-  if (!isRecord4(value)) {
+  if (!isRecord5(value)) {
     throw new Error(`relations \u7684\u7B2C ${index + 1} \u9879\u4E0D\u662F\u5BF9\u8C61\u3002`);
   }
   const targetId = readSourceId(value.targetId, allowedSourceIds, "\u5173\u8054\u5173\u7CFB targetId");
@@ -1270,7 +1488,7 @@ function parseJsonObject3(rawContent) {
   const content = rawContent.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "");
   try {
     const parsed = JSON.parse(content);
-    if (!isRecord4(parsed)) {
+    if (!isRecord5(parsed)) {
       throw new Error("JSON \u4E0D\u662F\u5BF9\u8C61\u3002 ");
     }
     return parsed;
@@ -1332,7 +1550,7 @@ function compactText2(value, maxLength) {
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-function isRecord4(value) {
+function isRecord5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -1395,7 +1613,7 @@ function parsePasteRepairSuggestion(rawContent) {
   const content = rawContent.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "");
   try {
     const parsed = JSON.parse(content);
-    if (!isRecord5(parsed) || typeof parsed.markdown !== "string" || !parsed.markdown.trim()) {
+    if (!isRecord6(parsed) || typeof parsed.markdown !== "string" || !parsed.markdown.trim()) {
       throw new Error("\u7F3A\u5C11 markdown \u5B57\u6BB5\u3002 ");
     }
     if (parsed.markdown.trim().length > MAX_SELECTION_LENGTH_FOR_AGENT * 2) {
@@ -1586,7 +1804,7 @@ function readSpan(attributes, name) {
   const match = new RegExp(`\\b${name}\\s*=\\s*["']?(\\d+)`, "iu").exec(attributes);
   return match ? Math.max(1, Number.parseInt(match[1], 10)) : 1;
 }
-function isRecord5(value) {
+function isRecord6(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -1647,7 +1865,7 @@ function createGardenerSources(results) {
   return sources;
 }
 function parseFinding(value, index, allowedIds) {
-  if (!isRecord6(value)) {
+  if (!isRecord7(value)) {
     throw new Error(`findings \u7684\u7B2C ${index + 1} \u9879\u4E0D\u662F\u5BF9\u8C61\u3002`);
   }
   return {
@@ -1662,7 +1880,7 @@ function parseJsonObject4(rawContent) {
   const content = rawContent.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "");
   try {
     const parsed = JSON.parse(content);
-    if (!isRecord6(parsed)) {
+    if (!isRecord7(parsed)) {
       throw new Error("JSON \u4E0D\u662F\u5BF9\u8C61\u3002 ");
     }
     return parsed;
@@ -1717,7 +1935,7 @@ function compactText3(value, maxLength) {
   const compact = value.replace(/\s+/gu, " ").trim();
   return compact.length > maxLength ? `${compact.slice(0, maxLength)}\u2026` : compact;
 }
-function isRecord6(value) {
+function isRecord7(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -1872,13 +2090,13 @@ function getAgentToolDefinition(call) {
   return definition;
 }
 function isAgentToolCall(value) {
-  return isRecord7(value) && typeof value.tool === "string" && typeof value.action === "string" && TOOL_BY_KEY.has(`${value.tool}:${value.action}`);
+  return isRecord8(value) && typeof value.tool === "string" && typeof value.action === "string" && TOOL_BY_KEY.has(`${value.tool}:${value.action}`);
 }
 function toolKey(call) {
   return `${call.tool}:${call.action}`;
 }
 function parsePlanStep(value, index) {
-  if (!isRecord7(value) || !isAgentToolCall(value)) {
+  if (!isRecord8(value) || !isAgentToolCall(value)) {
     throw new Error(`\u8FD0\u884C\u8BA1\u5212\u7B2C ${index + 1} \u9879\u5305\u542B\u672A\u6CE8\u518C\u5DE5\u5177\u52A8\u4F5C\u3002`);
   }
   return {
@@ -1921,7 +2139,7 @@ function parseJsonObject5(rawContent) {
   const content = rawContent.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "");
   try {
     const parsed = JSON.parse(content);
-    if (!isRecord7(parsed)) {
+    if (!isRecord8(parsed)) {
       throw new Error("JSON \u4E0D\u662F\u5BF9\u8C61\u3002");
     }
     return parsed;
@@ -1937,7 +2155,7 @@ function readString3(object, key, maxLength, label) {
   }
   return value.trim();
 }
-function isRecord7(value) {
+function isRecord8(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -2153,12 +2371,12 @@ function parseProfileMemorySuggestions(rawContent) {
   } catch {
     throw new Error("\u7528\u6237\u753B\u50CF\u5EFA\u8BAE\u4E0D\u662F\u6709\u6548 JSON\u3002 ");
   }
-  if (!isRecord8(parsed) || !Array.isArray(parsed.items)) {
+  if (!isRecord9(parsed) || !Array.isArray(parsed.items)) {
     throw new Error("\u7528\u6237\u753B\u50CF\u5EFA\u8BAE\u7F3A\u5C11 items \u6570\u7EC4\u3002 ");
   }
   const suggestions = [];
   for (const item of parsed.items.slice(0, 6)) {
-    if (!isRecord8(item) || !isProfileMemoryCategory(item.category) || typeof item.content !== "string") {
+    if (!isRecord9(item) || !isProfileMemoryCategory(item.category) || typeof item.content !== "string") {
       throw new Error("\u7528\u6237\u753B\u50CF\u5EFA\u8BAE\u5305\u542B\u65E0\u6548\u6761\u76EE\u3002 ");
     }
     const content = item.content.trim();
@@ -2257,7 +2475,7 @@ function formatProfileCategory(category) {
 function formatProfileSource(sessionPath) {
   return sessionPath ? `[[${sessionPath}]]` : "\u7528\u6237\u660E\u786E\u6307\u4EE4";
 }
-function isRecord8(value) {
+function isRecord9(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -2289,7 +2507,7 @@ ${renderWebSources(webSources)}
 function parseWikiVerificationReport(rawContent, allowedPaths) {
   const parsed = parseJsonObject6(rawContent, "Wiki \u6838\u9A8C\u62A5\u544A");
   const findings = readArray2(parsed.findings, 8, "findings").map((value, index) => {
-    if (!isRecord9(value)) {
+    if (!isRecord10(value)) {
       throw new Error(`Wiki \u6838\u9A8C\u62A5\u544A\u7684\u7B2C ${index + 1} \u9879\u4E0D\u662F\u5BF9\u8C61\u3002`);
     }
     const kind = value.kind;
@@ -2342,7 +2560,7 @@ function parseWikiUpdateBlocks(rawContent, allowedPaths) {
   const updates = readArray2(parsed.updates, 3, "updates");
   const seen = /* @__PURE__ */ new Set();
   return updates.map((value, index) => {
-    if (!isRecord9(value)) {
+    if (!isRecord10(value)) {
       throw new Error(`Wiki \u66F4\u65B0\u9884\u89C8\u7684\u7B2C ${index + 1} \u9879\u4E0D\u662F\u5BF9\u8C61\u3002`);
     }
     const path = readString4(value.path, 400, "Wiki \u66F4\u65B0\u8DEF\u5F84");
@@ -2400,7 +2618,7 @@ function renderReport(report) {
 function parseJsonObject6(rawContent, label) {
   try {
     const parsed = JSON.parse(rawContent.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, ""));
-    if (!isRecord9(parsed)) {
+    if (!isRecord10(parsed)) {
       throw new Error("JSON \u4E0D\u662F\u5BF9\u8C61\u3002 ");
     }
     return parsed;
@@ -2428,7 +2646,7 @@ function clip(value, maximum) {
 function escapeRegExp2(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-function isRecord9(value) {
+function isRecord10(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -2752,7 +2970,7 @@ function parseKnowledgeAnswer(rawContent) {
   } catch {
     throw new Error("DeepSeek \u6765\u6E90\u95EE\u7B54\u6CA1\u6709\u8FD4\u56DE\u6709\u6548 JSON\u3002 ");
   }
-  if (!isRecord10(parsed) || typeof parsed.answer !== "string" || !parsed.answer.trim() || typeof parsed.evidenceComplete !== "boolean") {
+  if (!isRecord11(parsed) || typeof parsed.answer !== "string" || !parsed.answer.trim() || typeof parsed.evidenceComplete !== "boolean") {
     throw new Error("DeepSeek \u6765\u6E90\u95EE\u7B54\u7F3A\u5C11\u6709\u6548\u7684\u8BC1\u636E\u72B6\u6001\u3002 ");
   }
   if (!Array.isArray(parsed.missingEvidence) || parsed.missingEvidence.length > 8 || parsed.missingEvidence.some((item) => typeof item !== "string" || !item.trim() || item.length > 120)) {
@@ -2764,7 +2982,7 @@ function parseKnowledgeAnswer(rawContent) {
     missingEvidence: [...new Set(parsed.missingEvidence.map((item) => item.trim()))]
   };
 }
-function isRecord10(value) {
+function isRecord11(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -5786,8 +6004,8 @@ function escapeRegExp3(value) {
 }
 
 // core/desktop/obsidian-vault-migrator.ts
-var import_promises2 = require("node:fs/promises");
-var import_node_path2 = require("node:path");
+var import_promises3 = require("node:fs/promises");
+var import_node_path3 = require("node:path");
 var EXCLUDED_DIRECTORY_NAMES = /* @__PURE__ */ new Set([".obsidian", ".git", ".knowledge-loop-agent"]);
 async function previewObsidianVaultMigration(sourcePath) {
   const sourceRoot = await resolveExistingDirectory(sourcePath, "\u539F\u59CB Obsidian \u77E5\u8BC6\u5E93");
@@ -5796,15 +6014,15 @@ async function previewObsidianVaultMigration(sourcePath) {
 }
 async function migrateObsidianVault(sourcePath, destinationPath) {
   const sourceRoot = await resolveExistingDirectory(sourcePath, "\u539F\u59CB Obsidian \u77E5\u8BC6\u5E93");
-  const destinationRoot = (0, import_node_path2.resolve)(destinationPath);
+  const destinationRoot = (0, import_node_path3.resolve)(destinationPath);
   ensureDestinationIsSeparate(sourceRoot, destinationRoot);
   await ensureDestinationDoesNotExist(destinationRoot);
   const files = await collectVaultFiles(sourceRoot);
-  await (0, import_promises2.mkdir)(destinationRoot, { recursive: true });
+  await (0, import_promises3.mkdir)(destinationRoot, { recursive: true });
   for (const file of files) {
-    const targetPath = (0, import_node_path2.join)(destinationRoot, ...file.relativePath.split("/"));
-    await (0, import_promises2.mkdir)((0, import_node_path2.dirname)(targetPath), { recursive: true });
-    await (0, import_promises2.copyFile)(file.sourcePath, targetPath);
+    const targetPath = (0, import_node_path3.join)(destinationRoot, ...file.relativePath.split("/"));
+    await (0, import_promises3.mkdir)((0, import_node_path3.dirname)(targetPath), { recursive: true });
+    await (0, import_promises3.copyFile)(file.sourcePath, targetPath);
   }
   return {
     ...toPreview(sourceRoot, files),
@@ -5812,7 +6030,7 @@ async function migrateObsidianVault(sourcePath, destinationPath) {
   };
 }
 function getStandaloneWorkspaceName(sourcePath) {
-  return `${(0, import_node_path2.basename)((0, import_node_path2.resolve)(sourcePath))}-\u77E5\u8BC6\u73AF\u8FC1\u79FB`;
+  return `${(0, import_node_path3.basename)((0, import_node_path3.resolve)(sourcePath))}-\u77E5\u8BC6\u73AF\u8FC1\u79FB`;
 }
 async function collectVaultFiles(sourceRoot) {
   const files = [];
@@ -5820,19 +6038,19 @@ async function collectVaultFiles(sourceRoot) {
   return files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
 }
 async function visitDirectory(sourceRoot, currentDirectory, files) {
-  const entries = await (0, import_promises2.readdir)(currentDirectory, { withFileTypes: true });
+  const entries = await (0, import_promises3.readdir)(currentDirectory, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.isDirectory()) {
       if (!EXCLUDED_DIRECTORY_NAMES.has(entry.name)) {
-        await visitDirectory(sourceRoot, (0, import_node_path2.join)(currentDirectory, entry.name), files);
+        await visitDirectory(sourceRoot, (0, import_node_path3.join)(currentDirectory, entry.name), files);
       }
       continue;
     }
     if (!entry.isFile()) {
       continue;
     }
-    const sourcePath = (0, import_node_path2.join)(currentDirectory, entry.name);
-    const relativePath = (0, import_node_path2.relative)(sourceRoot, sourcePath).split(import_node_path2.sep).join("/");
+    const sourcePath = (0, import_node_path3.join)(currentDirectory, entry.name);
+    const relativePath = (0, import_node_path3.relative)(sourceRoot, sourcePath).split(import_node_path3.sep).join("/");
     files.push({
       relativePath,
       sourcePath,
@@ -5850,24 +6068,24 @@ function toPreview(sourcePath, files) {
   };
 }
 async function resolveExistingDirectory(path, label) {
-  if (!path || !(0, import_node_path2.isAbsolute)(path)) {
+  if (!path || !(0, import_node_path3.isAbsolute)(path)) {
     throw new Error(`${label}\u8DEF\u5F84\u65E0\u6548\u3002`);
   }
-  const root = (0, import_node_path2.resolve)(path);
-  const current = await (0, import_promises2.stat)(root).catch(() => null);
+  const root = (0, import_node_path3.resolve)(path);
+  const current = await (0, import_promises3.stat)(root).catch(() => null);
   if (!current?.isDirectory()) {
     throw new Error(`${label}\u4E0D\u5B58\u5728\u6216\u4E0D\u662F\u76EE\u5F55\u3002`);
   }
   return root;
 }
 function ensureDestinationIsSeparate(sourceRoot, destinationRoot) {
-  const relationship = (0, import_node_path2.relative)(sourceRoot, destinationRoot);
-  if (!relationship || !relationship.startsWith("..") && !(0, import_node_path2.isAbsolute)(relationship)) {
+  const relationship = (0, import_node_path3.relative)(sourceRoot, destinationRoot);
+  if (!relationship || !relationship.startsWith("..") && !(0, import_node_path3.isAbsolute)(relationship)) {
     throw new Error("\u8FC1\u79FB\u76EE\u6807\u4E0D\u80FD\u662F\u539F\u59CB\u77E5\u8BC6\u5E93\u6216\u5176\u5B50\u76EE\u5F55\u3002");
   }
 }
 async function ensureDestinationDoesNotExist(destinationPath) {
-  const current = await (0, import_promises2.stat)(destinationPath).catch(() => null);
+  const current = await (0, import_promises3.stat)(destinationPath).catch(() => null);
   if (current) {
     throw new Error(`\u8FC1\u79FB\u76EE\u6807\u5DF2\u5B58\u5728\uFF1A${destinationPath}\u3002\u8BF7\u9009\u62E9\u5176\u4ED6\u7236\u76EE\u5F55\u3002`);
   }
@@ -5882,7 +6100,7 @@ var WINDOW_OPTIONS = {
   title: "\u77E5\u8BC6\u73AF",
   backgroundColor: "#fafafa",
   webPreferences: {
-    preload: (0, import_node_path3.join)(__dirname, "preload.cjs"),
+    preload: (0, import_node_path4.join)(__dirname, "preload.cjs"),
     contextIsolation: true,
     nodeIntegration: false
   }
@@ -5918,7 +6136,7 @@ var DesktopKnowledgeWorkspace = class {
   policy = new PolicyEngine(createDefaultPermissionPolicy());
   async restore() {
     try {
-      const raw = await (0, import_promises3.readFile)(getWorkspaceStatePath(), "utf8");
+      const raw = await (0, import_promises4.readFile)(getWorkspaceStatePath(), "utf8");
       const saved = JSON.parse(raw);
       return typeof saved.rootPath === "string" ? this.open(saved.rootPath) : null;
     } catch {
@@ -5966,7 +6184,7 @@ var DesktopKnowledgeWorkspace = class {
     }
     const migration = await migrateObsidianVault(
       sourcePath,
-      (0, import_node_path3.join)(parentDirectory, getStandaloneWorkspaceName(sourcePath))
+      (0, import_node_path4.join)(parentDirectory, getStandaloneWorkspaceName(sourcePath))
     );
     return {
       workspace: await this.open(migration.destinationPath),
@@ -5995,7 +6213,7 @@ var DesktopKnowledgeWorkspace = class {
     }
     return (await this.repository.listMarkdownFiles()).filter((file) => !isInternalWorkspacePath(file.path)).map((file) => ({
       path: file.path,
-      title: (0, import_node_path3.basename)(file.path).replace(/\.md$/i, "")
+      title: (0, import_node_path4.basename)(file.path).replace(/\.md$/i, "")
     }));
   }
   async answer(question, context = {}, stream) {
@@ -6180,7 +6398,7 @@ var DesktopKnowledgeWorkspace = class {
     const configuration = await readDesktopAgentConfiguration();
     this.wikiService = new DesktopWikiService(this.repository, this.index, this.policy, configuration);
     const result = await this.wikiService.compile(topic, mode);
-    this.summary = await this.index.rebuild(this.policy);
+    this.summary = await this.index.sync(this.policy);
     return result;
   }
   async inspectWikiSources(topic) {
@@ -6221,7 +6439,7 @@ var DesktopKnowledgeWorkspace = class {
     this.relationService = new DesktopRelationService(this.repository, this.index, this.policy, configuration);
     const preview = await this.relationService.preview(path);
     const result = await this.relationService.apply(preview);
-    this.summary = await this.index.rebuild(this.policy);
+    this.summary = await this.index.sync(this.policy);
     return result;
   }
   async verifyWiki(question) {
@@ -6271,7 +6489,7 @@ var DesktopKnowledgeWorkspace = class {
     }
     return {
       path: file.path,
-      title: (0, import_node_path3.basename)(file.path).replace(/\.md$/i, ""),
+      title: (0, import_node_path4.basename)(file.path).replace(/\.md$/i, ""),
       content: await this.repository.readText(file.path)
     };
   }
@@ -6283,7 +6501,7 @@ var DesktopKnowledgeWorkspace = class {
     if (!file) {
       throw new Error("\u6765\u6E90\u7B14\u8BB0\u5DF2\u4E0D\u5B58\u5728\u6216\u4E0D\u518D\u662F Markdown \u6587\u4EF6\u3002");
     }
-    const error = await import_electron.shell.openPath((0, import_node_path3.join)(this.rootPath, file.path));
+    const error = await import_electron.shell.openPath((0, import_node_path4.join)(this.rootPath, file.path));
     if (error) {
       throw new Error("\u65E0\u6CD5\u6253\u5F00\u6765\u6E90\u7B14\u8BB0\uFF1A" + error);
     }
@@ -6313,9 +6531,10 @@ var DesktopKnowledgeWorkspace = class {
     const repository = new NodeFileSystemKnowledgeRepository(rootPath);
     const index = new PortableMarkdownKnowledgeIndex(
       repository,
-      (path) => path.startsWith(".obsidian/") || path.startsWith(".knowledge-loop-agent/") || path.startsWith("00 Inbox/Agent/")
+      (path) => path.startsWith(".obsidian/") || path.startsWith(".knowledge-loop-agent/") || path.startsWith("00 Inbox/Agent/"),
+      { store: createNodeMarkdownIndexStore(getIndexSnapshotPath()), rootPath }
     );
-    const summary = await index.rebuild(this.policy);
+    const summary = await index.sync(this.policy);
     this.rootPath = rootPath;
     this.repository = repository;
     this.index = index;
@@ -6481,7 +6700,7 @@ var DesktopKnowledgeWorkspace = class {
     if (state.wikiDraft) {
       await this.wikiService?.persistRegistry(state.wikiDraft.registry);
     }
-    this.summary = this.index ? await this.index.rebuild(this.policy) : this.summary;
+    this.summary = this.index ? await this.index.sync(this.policy) : this.summary;
     return written;
   }
   toState() {
@@ -6490,7 +6709,7 @@ var DesktopKnowledgeWorkspace = class {
     }
     return {
       rootPath: this.rootPath,
-      displayName: (0, import_node_path3.basename)(this.rootPath),
+      displayName: (0, import_node_path4.basename)(this.rootPath),
       indexedFiles: this.summary.indexedFiles,
       skippedFiles: this.summary.skippedFiles,
       chunkCount: this.summary.chunkCount
@@ -6526,28 +6745,28 @@ function createWindow() {
   window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl) => {
     console.error("[renderer-load]", errorCode, errorDescription, validatedUrl);
   });
-  void window.loadFile((0, import_node_path3.join)(__dirname, "renderer", "index.html")).catch((error) => {
+  void window.loadFile((0, import_node_path4.join)(__dirname, "renderer", "index.html")).catch((error) => {
     console.error("[renderer-load]", error);
     import_electron.dialog.showErrorBox("\u65E0\u6CD5\u52A0\u8F7D\u754C\u9762", error instanceof Error ? error.message : String(error));
   });
   return window;
 }
 function getWorkspaceStatePath() {
-  return (0, import_node_path3.join)(import_electron.app.getPath("userData"), "workspace.json");
+  return (0, import_node_path4.join)(import_electron.app.getPath("userData"), "workspace.json");
 }
 function getDesktopEnvPath() {
-  return (0, import_node_path3.join)(import_electron.app.getPath("userData"), ".env");
+  return (0, import_node_path4.join)(import_electron.app.getPath("userData"), ".env");
 }
 function getSessionStatePath() {
-  return (0, import_node_path3.join)(import_electron.app.getPath("userData"), "sessions.json");
+  return (0, import_node_path4.join)(import_electron.app.getPath("userData"), "sessions.json");
 }
 async function saveWorkspacePath(rootPath) {
-  await (0, import_promises3.mkdir)(import_electron.app.getPath("userData"), { recursive: true });
-  await (0, import_promises3.writeFile)(getWorkspaceStatePath(), JSON.stringify({ rootPath }, null, 2), "utf8");
+  await (0, import_promises4.mkdir)(import_electron.app.getPath("userData"), { recursive: true });
+  await (0, import_promises4.writeFile)(getWorkspaceStatePath(), JSON.stringify({ rootPath }, null, 2), "utf8");
 }
 async function readSessionStates() {
   try {
-    const raw = await (0, import_promises3.readFile)(getSessionStatePath(), "utf8");
+    const raw = await (0, import_promises4.readFile)(getSessionStatePath(), "utf8");
     const parsed = JSON.parse(raw);
     return parsed.byWorkspace ?? {};
   } catch {
@@ -6555,15 +6774,18 @@ async function readSessionStates() {
   }
 }
 async function writeSessionStates(states) {
-  await (0, import_promises3.mkdir)(import_electron.app.getPath("userData"), { recursive: true });
-  await (0, import_promises3.writeFile)(getSessionStatePath(), JSON.stringify({ byWorkspace: states }, null, 2), "utf8");
+  await (0, import_promises4.mkdir)(import_electron.app.getPath("userData"), { recursive: true });
+  await (0, import_promises4.writeFile)(getSessionStatePath(), JSON.stringify({ byWorkspace: states }, null, 2), "utf8");
 }
 function getAttachmentStatePath() {
-  return (0, import_node_path3.join)(import_electron.app.getPath("userData"), "attachments.json");
+  return (0, import_node_path4.join)(import_electron.app.getPath("userData"), "attachments.json");
+}
+function getIndexSnapshotPath() {
+  return (0, import_node_path4.join)(import_electron.app.getPath("userData"), "index-snapshot.json");
 }
 async function readAttachmentStates() {
   try {
-    const raw = await (0, import_promises3.readFile)(getAttachmentStatePath(), "utf8");
+    const raw = await (0, import_promises4.readFile)(getAttachmentStatePath(), "utf8");
     const parsed = JSON.parse(raw);
     return parsed.byWorkspace ?? {};
   } catch {
@@ -6575,22 +6797,22 @@ async function readAttachmentState(rootPath) {
   return states[rootPath] ?? {};
 }
 async function writeAttachmentStates(states) {
-  await (0, import_promises3.mkdir)(import_electron.app.getPath("userData"), { recursive: true });
-  await (0, import_promises3.writeFile)(getAttachmentStatePath(), JSON.stringify({ byWorkspace: states }, null, 2), "utf8");
+  await (0, import_promises4.mkdir)(import_electron.app.getPath("userData"), { recursive: true });
+  await (0, import_promises4.writeFile)(getAttachmentStatePath(), JSON.stringify({ byWorkspace: states }, null, 2), "utf8");
 }
 async function ensureDesktopEnvFile() {
   try {
-    const current = await (0, import_promises3.readFile)(getDesktopEnvPath(), "utf8");
+    const current = await (0, import_promises4.readFile)(getDesktopEnvPath(), "utf8");
     const normalized = migrateDesktopEnv(current);
     if (normalized !== current) {
-      await (0, import_promises3.writeFile)(getDesktopEnvPath(), normalized, "utf8");
+      await (0, import_promises4.writeFile)(getDesktopEnvPath(), normalized, "utf8");
     }
   } catch (error) {
     if (!isMissingFileError2(error)) {
       throw error;
     }
-    await (0, import_promises3.mkdir)(import_electron.app.getPath("userData"), { recursive: true });
-    await (0, import_promises3.writeFile)(getDesktopEnvPath(), DESKTOP_ENV_TEMPLATE, "utf8");
+    await (0, import_promises4.mkdir)(import_electron.app.getPath("userData"), { recursive: true });
+    await (0, import_promises4.writeFile)(getDesktopEnvPath(), DESKTOP_ENV_TEMPLATE, "utf8");
   }
 }
 function migrateDesktopEnv(contents) {
@@ -6607,7 +6829,7 @@ function isMissingFileError2(error) {
 }
 async function readDesktopAgentConfiguration() {
   await ensureDesktopEnvFile();
-  const contents = await (0, import_promises3.readFile)(getDesktopEnvPath(), "utf8");
+  const contents = await (0, import_promises4.readFile)(getDesktopEnvPath(), "utf8");
   return {
     deepSeekApiKey: readEnvValue(contents, "DEEPSEEK_API_KEY") ?? "",
     deepSeekModel: readEnvValue(contents, "DEEPSEEK_MODEL") ?? "deepseek-v4-flash",
@@ -6620,7 +6842,7 @@ async function readDesktopAgentConfiguration() {
 }
 async function getProviderStatus() {
   await ensureDesktopEnvFile();
-  const contents = await (0, import_promises3.readFile)(getDesktopEnvPath(), "utf8");
+  const contents = await (0, import_promises4.readFile)(getDesktopEnvPath(), "utf8");
   return {
     deepSeekConfigured: Boolean(readEnvValue(contents, "DEEPSEEK_API_KEY")),
     tavilyConfigured: Boolean(readEnvValue(contents, "TAVILY_API_KEY")),

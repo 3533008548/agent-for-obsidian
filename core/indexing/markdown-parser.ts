@@ -2,7 +2,13 @@ import type { SourceRef } from "../domain/source-ref";
 import { hashText } from "../domain/content-hash";
 
 const MAX_CHUNK_CHARACTERS = 2_400;
-const PARSER_VERSION = "markdown-v1";
+
+/**
+ * Bumped whenever the chunking rules change. A persisted index snapshot that
+ * was written by a different parser version is discarded wholesale, because
+ * chunk content and locators are no longer comparable.
+ */
+export const MARKDOWN_PARSER_VERSION = "markdown-v1";
 
 export interface MarkdownChunk {
   source: SourceRef;
@@ -38,7 +44,7 @@ export function parseMarkdownIntoChunks(path: string, markdown: string): Markdow
           pathOrUrl: path,
           locator,
           contentHash: hashText(content),
-          parserVersion: PARSER_VERSION
+          parserVersion: MARKDOWN_PARSER_VERSION
         },
         content,
         heading: currentHeading,

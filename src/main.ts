@@ -6,6 +6,7 @@ import {
   PolicyEngine
 } from "../core/policy/policy-engine";
 import { NodeFileSystemKnowledgeRepository } from "../core/desktop/node-file-system-knowledge-repository";
+import { createNodeMarkdownIndexStore } from "../core/desktop/node-markdown-index-store";
 import {
   PortableMarkdownKnowledgeIndex,
   type MarkdownIndexSummary
@@ -412,7 +413,7 @@ class DesktopKnowledgeWorkspace {
     const configuration = await readDesktopAgentConfiguration();
     this.wikiService = new DesktopWikiService(this.repository, this.index, this.policy, configuration);
     const result = await this.wikiService.compile(topic, mode);
-    this.summary = await this.index.rebuild(this.policy);
+    this.summary = await this.index.sync(this.policy);
     return result;
   }
 
@@ -458,7 +459,7 @@ class DesktopKnowledgeWorkspace {
     this.relationService = new DesktopRelationService(this.repository, this.index, this.policy, configuration);
     const preview = await this.relationService.preview(path);
     const result = await this.relationService.apply(preview);
-    this.summary = await this.index.rebuild(this.policy);
+    this.summary = await this.index.sync(this.policy);
     return result;
   }
 
@@ -564,9 +565,10 @@ class DesktopKnowledgeWorkspace {
       (path) =>
         path.startsWith(".obsidian/") ||
         path.startsWith(".knowledge-loop-agent/") ||
-        path.startsWith("00 Inbox/Agent/")
+        path.startsWith("00 Inbox/Agent/"),
+      { store: createNodeMarkdownIndexStore(getIndexSnapshotPath()), rootPath }
     );
-    const summary = await index.rebuild(this.policy);
+    const summary = await index.sync(this.policy);
 
     this.rootPath = rootPath;
     this.repository = repository;
@@ -749,7 +751,7 @@ class DesktopKnowledgeWorkspace {
     if (state.wikiDraft) {
       await this.wikiService?.persistRegistry(state.wikiDraft.registry);
     }
-    this.summary = this.index ? await this.index.rebuild(this.policy) : this.summary;
+    this.summary = this.index ? await this.index.sync(this.policy) : this.summary;
     return written;
   }
 
@@ -856,6 +858,10 @@ async function writeSessionStates(states: Record<string, AgentSessionStoreState>
 
 function getAttachmentStatePath(): string {
   return join(app.getPath("userData"), "attachments.json");
+}
+
+function getIndexSnapshotPath(): string {
+  return join(app.getPath("userData"), "index-snapshot.json");
 }
 
 async function readAttachmentStates(): Promise<Record<string, DesktopAttachmentState>> {
