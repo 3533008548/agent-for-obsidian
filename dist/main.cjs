@@ -563,19 +563,182 @@ var MarkdownBm25Corpus = class {
   }
 };
 
+// core/indexing/search-rerank.ts
+var SIGNAL_WEIGHTS = {
+  /** Explicitly assigned by the user, so the most reliable signal. */
+  tag: 1.2,
+  /** The note points at this concept by name. */
+  link: 0.8,
+  /** Folders are manual topic classification. */
+  folder: 0.5,
+  /** Ancestor headings describe what the chunk is part of. */
+  ancestorHeading: 0.4
+};
+var ACTIVE_UPLIFT = {
+  /** The open note links to this note, or this note links back to it. */
+  link: 0.5,
+  /** Same folder as the open note. */
+  folder: 0.25
+};
+var UNKNOWN_IDF = 0.35;
+var signalCache = /* @__PURE__ */ new WeakMap();
+function rerankSearchResults(results, terms, context) {
+  const active = context.activeChunks?.length ? buildActiveNoteContext(context.activeChunks) : null;
+  return results.map((result) => {
+    const score = result.score + signalBoost(result.chunk, terms, context.corpus);
+    return { ...result, score: score * (1 + activeUplift(result.chunk, active)) };
+  }).sort(
+    (left, right) => right.score - left.score || left.chunk.source.pathOrUrl.localeCompare(right.chunk.source.pathOrUrl)
+  );
+}
+function signalBoost(chunk, terms, corpus) {
+  const signals = chunkSignals(chunk);
+  let boost = 0;
+  for (const term of terms) {
+    const idf = corpus.idfOf(term);
+    const weight = idf > 0 ? idf : UNKNOWN_IDF;
+    if (signals.tagTokens.has(term)) {
+      boost += SIGNAL_WEIGHTS.tag * weight;
+    }
+    if (signals.linkTokens.has(term)) {
+      boost += SIGNAL_WEIGHTS.link * weight;
+    }
+    if (signals.folderTokens.has(term)) {
+      boost += SIGNAL_WEIGHTS.folder * weight;
+    }
+    if (signals.ancestorTokens.has(term)) {
+      boost += SIGNAL_WEIGHTS.ancestorHeading * weight;
+    }
+  }
+  return boost;
+}
+function activeUplift(chunk, active) {
+  if (!active || active.path === chunk.source.pathOrUrl) {
+    return 0;
+  }
+  const signals = chunkSignals(chunk);
+  let uplift = 0;
+  if (active.linkedTargets.has(noteKey(chunk.source.pathOrUrl)) || signals.linkTargets.has(noteKey(active.path))) {
+    uplift += ACTIVE_UPLIFT.link;
+  }
+  if (signals.folder && active.folders.has(signals.folder)) {
+    uplift += ACTIVE_UPLIFT.folder;
+  }
+  return uplift;
+}
+function buildActiveNoteContext(chunks) {
+  const folders = /* @__PURE__ */ new Set();
+  const linkedTargets = /* @__PURE__ */ new Set();
+  for (const chunk of chunks) {
+    const signals = chunkSignals(chunk);
+    if (signals.folder) {
+      folders.add(signals.folder);
+    }
+    for (const target of signals.linkTargets) {
+      linkedTargets.add(target);
+    }
+  }
+  return { path: chunks[0].source.pathOrUrl, folders, linkedTargets };
+}
+function chunkSignals(chunk) {
+  const cached = signalCache.get(chunk);
+  if (cached) {
+    return cached;
+  }
+  const folder = folderOf(chunk.source.pathOrUrl);
+  const signals = {
+    tagTokens: toTokens(extractTags(chunk.content)),
+    linkTokens: toTokens(extractLinkTitles(chunk.content)),
+    folderTokens: toTokens(folder.split("/")),
+    ancestorTokens: toTokens(chunk.headingPath.slice(0, -1)),
+    linkTargets: new Set(extractLinkTitles(chunk.content).map(noteKey)),
+    folder
+  };
+  signalCache.set(chunk, signals);
+  return signals;
+}
+function extractTags(content) {
+  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/u.exec(content);
+  const body = frontmatter ? content.slice(frontmatter[0].length) : content;
+  const tags = [];
+  if (frontmatter) {
+    let collecting = false;
+    for (const line of frontmatter[1].split("\n")) {
+      const item = /^\s*-\s*(.+?)\s*$/u.exec(line);
+      if (item && collecting) {
+        tags.push(cleanTag(item[1]));
+        continue;
+      }
+      const field = /^\s*(tag|tags|alias|aliases)\s*:\s*(.*)$/u.exec(line);
+      collecting = field !== null && !field[2].trim();
+      if (field?.[2]) {
+        tags.push(...field[2].replace(/[[\]]/gu, " ").split(",").map(cleanTag));
+      }
+    }
+  }
+  let insideCodeFence = false;
+  for (const line of body.split("\n")) {
+    if (/^\s*(```|~~~)/u.test(line)) {
+      insideCodeFence = !insideCodeFence;
+      continue;
+    }
+    if (insideCodeFence || /^\s*#{1,6}\s/u.test(line)) {
+      continue;
+    }
+    for (const match of line.matchAll(/(?:^|[^\w#\\])#([\p{L}\p{N}][\p{L}\p{N}_/-]*)/gu)) {
+      tags.push(cleanTag(match[1]));
+    }
+  }
+  return tags.filter(Boolean);
+}
+function extractLinkTitles(content) {
+  const titles = [];
+  for (const match of content.matchAll(/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/gu)) {
+    titles.push(match[1].trim());
+  }
+  return titles;
+}
+function folderOf(pathOrUrl) {
+  const segments = pathOrUrl.replace(/\\/gu, "/").split("/");
+  return segments.slice(0, -1).join("/");
+}
+function noteKey(pathOrUrl) {
+  const normalized = pathOrUrl.replace(/\\/gu, "/").replace(/\.md$/iu, "");
+  const segments = normalized.split("/");
+  return (segments[segments.length - 1] ?? normalized).toLocaleLowerCase();
+}
+function cleanTag(tag) {
+  return tag.trim().replace(/^#/u, "").replace(/^["']|["']$/gu, "");
+}
+function toTokens(values) {
+  const tokens = /* @__PURE__ */ new Set();
+  for (const value of values) {
+    if (!value) {
+      continue;
+    }
+    for (const token of tokenizeForSearch(value)) {
+      tokens.add(token);
+    }
+  }
+  return tokens;
+}
+
 // core/indexing/markdown-search.ts
+var RERANK_DEPTH_FACTOR = 3;
+var MIN_RERANK_DEPTH = 24;
 var PHRASE_BONUS = {
   content: 1.5,
   heading: 1,
   fileName: 0.8
 };
-function searchMarkdownChunks(chunks, query, limit = 8, corpus = new MarkdownBm25Corpus(chunks)) {
+function searchMarkdownChunks(chunks, query, limit = 8, options = {}) {
   const normalizedQuery = query.trim().toLocaleLowerCase();
   if (!normalizedQuery) {
     return [];
   }
   const terms = extractSearchTerms(normalizedQuery);
   const requiredTerms = extractRequiredTerms(normalizedQuery);
+  const corpus = options.corpus ?? new MarkdownBm25Corpus(chunks);
   const ranked = [];
   for (const chunk of chunks) {
     const haystack = chunk.content.toLocaleLowerCase();
@@ -600,7 +763,12 @@ ${fileName}`;
   ranked.sort(
     (left, right) => right.score - left.score || left.chunk.source.pathOrUrl.localeCompare(right.chunk.source.pathOrUrl)
   );
-  return selectDiverseSearchResults(ranked, limit);
+  const depth = Math.min(ranked.length, Math.max(limit * RERANK_DEPTH_FACTOR, MIN_RERANK_DEPTH));
+  const reranked = rerankSearchResults(ranked.slice(0, depth), terms, {
+    corpus,
+    activeChunks: options.activePath ? chunks.filter((chunk) => chunk.source.pathOrUrl === options.activePath) : void 0
+  });
+  return selectDiverseSearchResults([...reranked, ...ranked.slice(depth)], limit);
 }
 function selectDiverseSearchResults(results, limit = 8) {
   const distinctPaths = [];
@@ -768,8 +936,11 @@ var PortableMarkdownKnowledgeIndex = class {
   has(path) {
     return this.entries.has(path);
   }
-  search(query, limit = 8) {
-    return searchMarkdownChunks(this.getAllChunks(), query, limit, this.currentCorpus());
+  search(query, limit = 8, activePath = null) {
+    return searchMarkdownChunks(this.getAllChunks(), query, limit, {
+      corpus: this.currentCorpus(),
+      activePath
+    });
   }
   getForPath(path) {
     return [...this.entries.get(path)?.chunks ?? []];
@@ -3210,7 +3381,7 @@ var DesktopAgentService = class {
       throw new Error("\u8BF7\u5148\u70B9\u51FB\u201C\u6A21\u578B\u914D\u7F6E\u201D\uFF0C\u5728\u672C\u5730 .env \u4E2D\u586B\u5199 DEEPSEEK_API_KEY\u3002");
     }
     const localResults = [
-      ...this.index.search(normalizedQuestion, 8),
+      ...this.index.search(normalizedQuestion, 8, this.configuration.activeNotePath ?? null),
       ...this.configuration.attachmentSearch?.(normalizedQuestion, 4) ?? []
     ].sort((left, right) => right.score - left.score).slice(0, 8);
     const sources = toDesktopSources(localResults);
@@ -6341,6 +6512,7 @@ var DesktopKnowledgeWorkspace = class {
     const agent = new DesktopAgentService(this.index, {
       ...await readDesktopAgentConfiguration(),
       memoryContext,
+      activeNotePath: context.activeNotePath ?? this.activeNotePath,
       attachmentSearch: this.attachmentService?.search.bind(this.attachmentService)
     });
     const answer = await agent.answer(question, "auto", stream);
@@ -6715,6 +6887,7 @@ var DesktopKnowledgeWorkspace = class {
     });
     const agent = new DesktopAgentService(index, {
       ...configuration,
+      activeNotePath: this.activeNotePath,
       attachmentSearch: this.attachmentService.search.bind(this.attachmentService)
     });
     const runtime = new DesktopAgentRuntime(

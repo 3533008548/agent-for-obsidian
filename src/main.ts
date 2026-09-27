@@ -210,6 +210,7 @@ class DesktopKnowledgeWorkspace {
     const agent = new DesktopAgentService(this.index, {
       ...(await readDesktopAgentConfiguration()),
       memoryContext,
+      activeNotePath: context.activeNotePath ?? this.activeNotePath,
       attachmentSearch: this.attachmentService?.search.bind(this.attachmentService)
     });
     const answer = await agent.answer(question, "auto", stream);
@@ -649,6 +650,7 @@ class DesktopKnowledgeWorkspace {
     });
     const agent = new DesktopAgentService(index, {
       ...configuration,
+      activeNotePath: this.activeNotePath,
       attachmentSearch: this.attachmentService.search.bind(this.attachmentService)
     });
     const runtime = new DesktopAgentRuntime(

@@ -175,8 +175,11 @@ export class PortableMarkdownKnowledgeIndex {
     return this.entries.has(path);
   }
 
-  search(query: string, limit = 8): MarkdownSearchResult[] {
-    return searchMarkdownChunks(this.getAllChunks(), query, limit, this.currentCorpus());
+  search(query: string, limit = 8, activePath: string | null = null): MarkdownSearchResult[] {
+    return searchMarkdownChunks(this.getAllChunks(), query, limit, {
+      corpus: this.currentCorpus(),
+      activePath
+    });
   }
 
   getForPath(path: string): MarkdownChunk[] {

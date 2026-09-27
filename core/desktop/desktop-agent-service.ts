@@ -19,6 +19,11 @@ export interface DesktopAgentConfiguration {
   webFallbackPolicy: WebFallbackPolicy;
   memoryContext?: string;
   attachmentSearch?: (query: string, limit?: number) => MarkdownSearchResult[];
+  /**
+   * Note open in the editor, if any. Retrieval boosts notes it links to, so
+   * "这个和 X 的关系" resolves against the note the user is looking at.
+   */
+  activeNotePath?: string | null;
 }
 
 export type DesktopAgentAnswerMode = "local" | "web" | "general" | "evidence-gap";
@@ -85,7 +90,7 @@ export class DesktopAgentService {
     }
 
     const localResults = [
-      ...this.index.search(normalizedQuestion, 8),
+      ...this.index.search(normalizedQuestion, 8, this.configuration.activeNotePath ?? null),
       ...(this.configuration.attachmentSearch?.(normalizedQuestion, 4) ?? [])
     ]
       .sort((left, right) => right.score - left.score)
