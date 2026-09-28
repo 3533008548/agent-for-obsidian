@@ -1,7 +1,7 @@
 "use strict";
 
 // src/main.ts
-var import_electron = require("electron");
+var import_electron2 = require("electron");
 var import_promises4 = require("node:fs/promises");
 var import_node_path5 = require("node:path");
 
@@ -297,8 +297,8 @@ function asSnapshotFile(value) {
     return null;
   }
   const chunks = [];
-  for (const chunk of value.chunks) {
-    const parsed = asChunk(chunk);
+  for (const chunk2 of value.chunks) {
+    const parsed = asChunk(chunk2);
     if (!parsed) {
       return null;
     }
@@ -499,8 +499,8 @@ var MarkdownBm25Corpus = class {
   constructor(chunks) {
     const documentFrequency = /* @__PURE__ */ new Map();
     let totalLength = 0;
-    for (const chunk of chunks) {
-      const { frequencies, length } = this.frequenciesOf(chunk);
+    for (const chunk2 of chunks) {
+      const { frequencies, length } = this.frequenciesOf(chunk2);
       totalLength += length;
       for (const term of frequencies.keys()) {
         documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
@@ -523,8 +523,8 @@ var MarkdownBm25Corpus = class {
     const { documentCount } = this.stats;
     return Math.log(1 + (documentCount - documentFrequency + 0.5) / (documentFrequency + 0.5));
   }
-  score(chunk, terms) {
-    const { frequencies, length } = this.frequenciesOf(chunk);
+  score(chunk2, terms) {
+    const { frequencies, length } = this.frequenciesOf(chunk2);
     if (!length) {
       return 0;
     }
@@ -539,8 +539,8 @@ var MarkdownBm25Corpus = class {
     }
     return score;
   }
-  frequenciesOf(chunk) {
-    const cached = this.cache.get(chunk);
+  frequenciesOf(chunk2) {
+    const cached = this.cache.get(chunk2);
     if (cached) {
       return cached;
     }
@@ -550,15 +550,15 @@ var MarkdownBm25Corpus = class {
         frequencies.set(token, (frequencies.get(token) ?? 0) + weight);
       }
     };
-    add(chunk.content, FIELD_WEIGHTS.content);
-    add(chunk.heading ?? "", FIELD_WEIGHTS.heading);
-    add(fileNameOf(chunk.source.pathOrUrl), FIELD_WEIGHTS.fileName);
+    add(chunk2.content, FIELD_WEIGHTS.content);
+    add(chunk2.heading ?? "", FIELD_WEIGHTS.heading);
+    add(fileNameOf(chunk2.source.pathOrUrl), FIELD_WEIGHTS.fileName);
     let length = 0;
     for (const frequency of frequencies.values()) {
       length += frequency;
     }
     const entry = { frequencies, length };
-    this.cache.set(chunk, entry);
+    this.cache.set(chunk2, entry);
     return entry;
   }
 };
@@ -591,8 +591,8 @@ function rerankSearchResults(results, terms, context) {
     (left, right) => right.score - left.score || left.chunk.source.pathOrUrl.localeCompare(right.chunk.source.pathOrUrl)
   );
 }
-function signalBoost(chunk, terms, corpus) {
-  const signals = chunkSignals(chunk);
+function signalBoost(chunk2, terms, corpus) {
+  const signals = chunkSignals(chunk2);
   let boost = 0;
   for (const term of terms) {
     const idf = corpus.idfOf(term);
@@ -612,13 +612,13 @@ function signalBoost(chunk, terms, corpus) {
   }
   return boost;
 }
-function activeUplift(chunk, active) {
-  if (!active || active.path === chunk.source.pathOrUrl) {
+function activeUplift(chunk2, active) {
+  if (!active || active.path === chunk2.source.pathOrUrl) {
     return 0;
   }
-  const signals = chunkSignals(chunk);
+  const signals = chunkSignals(chunk2);
   let uplift = 0;
-  if (active.linkedTargets.has(noteKey(chunk.source.pathOrUrl)) || signals.linkTargets.has(noteKey(active.path))) {
+  if (active.linkedTargets.has(noteKey(chunk2.source.pathOrUrl)) || signals.linkTargets.has(noteKey(active.path))) {
     uplift += ACTIVE_UPLIFT.link;
   }
   if (signals.folder && active.folders.has(signals.folder)) {
@@ -629,8 +629,8 @@ function activeUplift(chunk, active) {
 function buildActiveNoteContext(chunks) {
   const folders = /* @__PURE__ */ new Set();
   const linkedTargets = /* @__PURE__ */ new Set();
-  for (const chunk of chunks) {
-    const signals = chunkSignals(chunk);
+  for (const chunk2 of chunks) {
+    const signals = chunkSignals(chunk2);
     if (signals.folder) {
       folders.add(signals.folder);
     }
@@ -640,21 +640,21 @@ function buildActiveNoteContext(chunks) {
   }
   return { path: chunks[0].source.pathOrUrl, folders, linkedTargets };
 }
-function chunkSignals(chunk) {
-  const cached = signalCache.get(chunk);
+function chunkSignals(chunk2) {
+  const cached = signalCache.get(chunk2);
   if (cached) {
     return cached;
   }
-  const folder = folderOf(chunk.source.pathOrUrl);
+  const folder = folderOf(chunk2.source.pathOrUrl);
   const signals = {
-    tagTokens: toTokens(extractTags(chunk.content)),
-    linkTokens: toTokens(extractLinkTitles(chunk.content)),
+    tagTokens: toTokens(extractTags(chunk2.content)),
+    linkTokens: toTokens(extractLinkTitles(chunk2.content)),
     folderTokens: toTokens(folder.split("/")),
-    ancestorTokens: toTokens(chunk.headingPath.slice(0, -1)),
-    linkTargets: new Set(extractLinkTitles(chunk.content).map(noteKey)),
+    ancestorTokens: toTokens(chunk2.headingPath.slice(0, -1)),
+    linkTargets: new Set(extractLinkTitles(chunk2.content).map(noteKey)),
     folder
   };
-  signalCache.set(chunk, signals);
+  signalCache.set(chunk2, signals);
   return signals;
 }
 function extractTags(content) {
@@ -740,24 +740,24 @@ function searchMarkdownChunks(chunks, query, limit = 8, options = {}) {
   const requiredTerms = extractRequiredTerms(normalizedQuery);
   const corpus = options.corpus ?? new MarkdownBm25Corpus(chunks);
   const ranked = [];
-  for (const chunk of chunks) {
-    const haystack = chunk.content.toLocaleLowerCase();
-    const heading = (chunk.heading ?? "").toLocaleLowerCase();
-    const fileName = fileNameOf(chunk.source.pathOrUrl).toLocaleLowerCase();
+  for (const chunk2 of chunks) {
+    const haystack = chunk2.content.toLocaleLowerCase();
+    const heading = (chunk2.heading ?? "").toLocaleLowerCase();
+    const fileName = fileNameOf(chunk2.source.pathOrUrl).toLocaleLowerCase();
     const searchableText = `${haystack}
 ${heading}
 ${fileName}`;
     if (!requiredTerms.every((term) => searchableText.includes(term))) {
       continue;
     }
-    const score = corpus.score(chunk, terms) + phraseBonus(normalizedQuery, haystack, heading, fileName);
+    const score = corpus.score(chunk2, terms) + phraseBonus(normalizedQuery, haystack, heading, fileName);
     if (score <= 0) {
       continue;
     }
     ranked.push({
-      chunk,
+      chunk: chunk2,
       score,
-      excerpt: createExcerpt(chunk.content, normalizedQuery, terms)
+      excerpt: createExcerpt(chunk2.content, normalizedQuery, terms)
     });
   }
   ranked.sort(
@@ -766,7 +766,7 @@ ${fileName}`;
   const depth = Math.min(ranked.length, Math.max(limit * RERANK_DEPTH_FACTOR, MIN_RERANK_DEPTH));
   const reranked = rerankSearchResults(ranked.slice(0, depth), terms, {
     corpus,
-    activeChunks: options.activePath ? chunks.filter((chunk) => chunk.source.pathOrUrl === options.activePath) : void 0
+    activeChunks: options.activePath ? chunks.filter((chunk2) => chunk2.source.pathOrUrl === options.activePath) : void 0
   });
   return selectDiverseSearchResults([...reranked, ...ranked.slice(depth)], limit);
 }
@@ -1363,11 +1363,11 @@ function createJsonFieldExtractor(field) {
     return fresh;
   }
   return {
-    push(chunk) {
-      if (isClosed || !chunk) {
+    push(chunk2) {
+      if (isClosed || !chunk2) {
         return "";
       }
-      buffer += chunk;
+      buffer += chunk2;
       if (cursor < 0 && !locateKey()) {
         return "";
       }
@@ -4105,7 +4105,7 @@ function compileLlmWikiTopic(session, registry, knowledgeSystemFolder, options =
   }));
   const previousCoverage = previousTopic?.coverage?.seenSourceHashes ?? previousTopic?.sourceHashes ?? [];
   const sourceHashes = options.mode === "expand" ? mergeSourceHashes(previousTopic?.sourceHashes ?? [], currentSourceHashes) : currentSourceHashes;
-  const coverage = {
+  const coverage2 = {
     seenSourceHashes: mergeSourceHashes(previousCoverage, currentSourceHashes),
     ...options.mode === "expand" ? { lastExpansionAt: session.createdAt } : previousTopic?.coverage?.lastExpansionAt ? { lastExpansionAt: previousTopic.coverage.lastExpansionAt } : {},
     ...options.coverageReport ? { lastReport: options.coverageReport } : previousTopic?.coverage?.lastReport ? { lastReport: previousTopic.coverage.lastReport } : {}
@@ -4118,7 +4118,7 @@ function compileLlmWikiTopic(session, registry, knowledgeSystemFolder, options =
     status: hasSourceHealthIssue(sourceHealth) ? "stale" : "fresh",
     updatedAt: session.createdAt,
     sourceHashes,
-    coverage,
+    coverage: coverage2,
     ...sourceHealth?.length ? { sourceHealth } : {},
     pages: [toPageRecord(topicPage), ...conceptPages.map(toPageRecord), ...retainedConcepts]
   };
@@ -4694,7 +4694,7 @@ var DesktopWikiService = class {
         continue;
       }
       const content = await this.repository.readText(path);
-      const currentHashes = new Set(parseMarkdownIntoChunks(path, content).map((chunk) => hashText(chunk.content)));
+      const currentHashes = new Set(parseMarkdownIntoChunks(path, content).map((chunk2) => hashText(chunk2.content)));
       health.push({
         pathOrUrl: path,
         status: [...expectedHashes].every((hash) => currentHashes.has(hash)) ? "active" : "changed",
@@ -6282,6 +6282,211 @@ function escapeRegExp3(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// src/tray-controller.ts
+var import_electron = require("electron");
+
+// src/tray-icon.ts
+var import_node_zlib = require("node:zlib");
+var CRC_TABLE = buildCrcTable();
+function createTrayIconBuffer(size = 64) {
+  const pixels = new Uint8Array(size * size * 4);
+  const center = (size - 1) / 2;
+  const radius = size / 2 - 1;
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const distance = Math.hypot(x - center, y - center);
+      let color = [0, 0, 0, 0];
+      color = over(color, [38, 42, 56, 255], coverage(radius - distance));
+      color = over(color, [125, 156, 255, 255], ringCoverage(distance, size));
+      color = over(color, [242, 245, 255, 255], coverage(size * 0.075 - distance));
+      const offset = (y * size + x) * 4;
+      pixels[offset] = color[0];
+      pixels[offset + 1] = color[1];
+      pixels[offset + 2] = color[2];
+      pixels[offset + 3] = color[3];
+    }
+  }
+  return encodePng(pixels, size, size);
+}
+function coverage(distanceInsideEdge, feather = 1.25) {
+  return clamp(distanceInsideEdge / feather + 0.5, 0, 1);
+}
+function ringCoverage(distance, size) {
+  const thickness = size * 0.11;
+  const middle = size * 0.29;
+  return coverage(thickness - Math.abs(distance - middle));
+}
+function over(destination, source, alpha) {
+  if (alpha <= 0) {
+    return destination;
+  }
+  const a = alpha * (source[3] / 255);
+  const remaining = 1 - a;
+  return [
+    Math.round(source[0] * a + destination[0] * remaining),
+    Math.round(source[1] * a + destination[1] * remaining),
+    Math.round(source[2] * a + destination[2] * remaining),
+    Math.round(a * 255 + destination[3] * remaining)
+  ];
+}
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+function encodePng(rgba, width, height) {
+  const raw = Buffer.alloc(height * (1 + width * 4));
+  for (let y = 0; y < height; y += 1) {
+    raw[y * (1 + width * 4)] = 0;
+    Buffer.from(rgba.buffer, y * width * 4, width * 4).copy(raw, y * (1 + width * 4) + 1);
+  }
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 6;
+  header[10] = 0;
+  header[11] = 0;
+  header[12] = 0;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", header),
+    chunk("IDAT", (0, import_node_zlib.deflateSync)(raw, { level: 9 })),
+    chunk("IEND", Buffer.alloc(0))
+  ]);
+}
+function chunk(type, data) {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  const typed = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(typed), 0);
+  return Buffer.concat([length, typed, crc]);
+}
+function crc32(buffer) {
+  let crc = 4294967295;
+  for (const byte of buffer) {
+    crc = CRC_TABLE[(crc ^ byte) & 255] ^ crc >>> 8;
+  }
+  return (crc ^ 4294967295) >>> 0;
+}
+function buildCrcTable() {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < 256; index += 1) {
+    let value = index;
+    for (let round = 0; round < 8; round += 1) {
+      value = value & 1 ? 3988292384 ^ value >>> 1 : value >>> 1;
+    }
+    table[index] = value >>> 0;
+  }
+  return table;
+}
+
+// src/tray.ts
+var DEFAULT_HOTKEY = "CommandOrControl+Shift+K";
+var HOTKEY_CANDIDATES = [DEFAULT_HOTKEY, "CommandOrControl+Alt+K"];
+var MODIFIER_LABELS = {
+  CommandOrControl: { darwin: "\u2318", other: "Ctrl" },
+  Cmd: { darwin: "\u2318", other: "Ctrl" },
+  Command: { darwin: "\u2318", other: "Ctrl" },
+  Control: { darwin: "\u2303", other: "Ctrl" },
+  Ctrl: { darwin: "\u2303", other: "Ctrl" },
+  Alt: { darwin: "\u2325", other: "Alt" },
+  Option: { darwin: "\u2325", other: "Alt" },
+  Shift: { darwin: "\u21E7", other: "Shift" },
+  Meta: { darwin: "\u2318", other: "Win" },
+  Super: { darwin: "\u2318", other: "Win" }
+};
+var DARWIN_KEY_LABELS = {
+  Return: "\u21A9",
+  Enter: "\u21A9",
+  Escape: "\u238B",
+  Space: "\u7A7A\u683C",
+  Up: "\u2191",
+  Down: "\u2193",
+  Left: "\u2190",
+  Right: "\u2192"
+};
+function describeAccelerator(accelerator, platform = process.platform) {
+  const parts = accelerator.split("+").filter(Boolean);
+  const isDarwin = platform === "darwin";
+  const labels = parts.map((part) => {
+    const modifier = MODIFIER_LABELS[part];
+    if (modifier) {
+      return isDarwin ? modifier.darwin : modifier.other;
+    }
+    if (isDarwin) {
+      return DARWIN_KEY_LABELS[part] ?? part.toUpperCase();
+    }
+    return part.length === 1 ? part.toUpperCase() : part;
+  });
+  return isDarwin ? labels.join("") : labels.join(" + ");
+}
+
+// src/tray-controller.ts
+function registerFirstAvailableHotkey(summon) {
+  for (const candidate of HOTKEY_CANDIDATES) {
+    if (import_electron.globalShortcut.register(candidate, summon)) {
+      return candidate;
+    }
+  }
+  console.error("[tray] \u5168\u5C40\u5FEB\u6377\u952E\u6CE8\u518C\u5931\u8D25\uFF0C\u53EF\u80FD\u5DF2\u88AB\u5176\u5B83\u7A0B\u5E8F\u5360\u7528\uFF1A", HOTKEY_CANDIDATES.join(" / "));
+  return null;
+}
+function createTrayController(options) {
+  const hotkey = registerFirstAvailableHotkey(() => options.summon());
+  const hotkeyLabel = hotkey ? describeAccelerator(hotkey) : "\uFF08\u5FEB\u6377\u952E\u88AB\u5360\u7528\uFF09";
+  const tray = new import_electron.Tray(import_electron.nativeImage.createFromBuffer(createTrayIconBuffer()));
+  tray.setToolTip("\u77E5\u8BC6\u73AF");
+  if (process.platform !== "darwin") {
+    tray.on("click", () => options.toggle());
+  }
+  let notifiedAboutTray = false;
+  const refreshMenu = () => {
+    tray.setContextMenu(
+      import_electron.Menu.buildFromTemplate([
+        {
+          label: options.isVisible() ? "\u9690\u85CF\u7A97\u53E3" : "\u663E\u793A\u7A97\u53E3",
+          click: () => options.toggle()
+        },
+        { label: "\u6253\u5F00\u5176\u4ED6\u77E5\u8BC6\u5E93\u2026", click: () => options.chooseVault() },
+        { type: "separator" },
+        {
+          label: "\u5F00\u673A\u81EA\u542F\u52A8",
+          type: "checkbox",
+          // Read back from the OS rather than a config file: the user can also
+          // change it in Task Manager / System Settings, and a stale copy here
+          // would show a checkbox that lies.
+          checked: import_electron.app.getLoginItemSettings().openAtLogin,
+          click: (item) => import_electron.app.setLoginItemSettings({ openAtLogin: item.checked })
+        },
+        { type: "separator" },
+        { label: `\u6309 ${hotkeyLabel} \u5524\u8D77`, enabled: false },
+        { type: "separator" },
+        { label: "\u9000\u51FA\u77E5\u8BC6\u73AF", click: () => options.quit() }
+      ])
+    );
+  };
+  refreshMenu();
+  return {
+    hotkey: hotkey ?? "",
+    hotkeyRegistered: Boolean(hotkey),
+    refreshMenu,
+    notifyHidden() {
+      if (notifiedAboutTray) {
+        return;
+      }
+      notifiedAboutTray = true;
+      tray.displayBalloon({
+        title: "\u77E5\u8BC6\u73AF\u4ECD\u5728\u540E\u53F0\u8FD0\u884C",
+        content: `\u6309 ${hotkeyLabel} \u968F\u65F6\u5524\u8D77\uFF0C\u6216\u5728\u6258\u76D8\u56FE\u6807\u4E0A\u53F3\u952E\u9000\u51FA\u3002`
+      });
+    },
+    dispose() {
+      import_electron.globalShortcut.unregisterAll();
+      tray.destroy();
+    }
+  };
+}
+
 // core/desktop/obsidian-vault-migrator.ts
 var import_promises3 = require("node:fs/promises");
 var import_node_path3 = require("node:path");
@@ -6481,14 +6686,14 @@ var DesktopKnowledgeWorkspace = class {
     }
   }
   async choose() {
-    const result = await import_electron.dialog.showOpenDialog({
+    const result = await import_electron2.dialog.showOpenDialog({
       title: "\u9009\u62E9\u77E5\u8BC6\u5E93\u76EE\u5F55",
       properties: ["openDirectory", "createDirectory"]
     });
     return result.canceled || !result.filePaths[0] ? null : this.open(result.filePaths[0]);
   }
   async migrateFromObsidian() {
-    const sourceResult = await import_electron.dialog.showOpenDialog({
+    const sourceResult = await import_electron2.dialog.showOpenDialog({
       title: "\u9009\u62E9\u539F\u59CB Obsidian \u77E5\u8BC6\u5E93",
       buttonLabel: "\u9009\u62E9\u6B64\u77E5\u8BC6\u5E93",
       properties: ["openDirectory"]
@@ -6498,7 +6703,7 @@ var DesktopKnowledgeWorkspace = class {
       return null;
     }
     const preview = await previewObsidianVaultMigration(sourcePath);
-    const confirmation = await import_electron.dialog.showMessageBox({
+    const confirmation = await import_electron2.dialog.showMessageBox({
       type: "question",
       buttons: ["\u7EE7\u7EED\u8FC1\u79FB", "\u53D6\u6D88"],
       defaultId: 0,
@@ -6510,7 +6715,7 @@ var DesktopKnowledgeWorkspace = class {
     if (confirmation.response !== 0) {
       return null;
     }
-    const destinationResult = await import_electron.dialog.showOpenDialog({
+    const destinationResult = await import_electron2.dialog.showOpenDialog({
       title: "\u9009\u62E9\u8FC1\u79FB\u540E\u77E5\u8BC6\u5E93\u7684\u5B58\u653E\u4F4D\u7F6E",
       buttonLabel: "\u5B58\u653E\u5230\u6B64\u5904",
       properties: ["openDirectory", "createDirectory"]
@@ -6764,9 +6969,9 @@ var DesktopKnowledgeWorkspace = class {
     return result;
   }
   formatClipboard() {
-    const before = import_electron.clipboard.readText();
-    const result = formatPastedContent({ text: before, html: import_electron.clipboard.readHTML() });
-    import_electron.clipboard.writeText(result.markdown);
+    const before = import_electron2.clipboard.readText();
+    const result = formatPastedContent({ text: before, html: import_electron2.clipboard.readHTML() });
+    import_electron2.clipboard.writeText(result.markdown);
     return { changed: result.markdown !== before, text: result.markdown, quality: result.report };
   }
   async completeRelations(path) {
@@ -6839,7 +7044,7 @@ var DesktopKnowledgeWorkspace = class {
     if (!file) {
       throw new Error("\u6765\u6E90\u7B14\u8BB0\u5DF2\u4E0D\u5B58\u5728\u6216\u4E0D\u518D\u662F Markdown \u6587\u4EF6\u3002");
     }
-    const error = await import_electron.shell.openPath((0, import_node_path5.join)(this.rootPath, file.path));
+    const error = await import_electron2.shell.openPath((0, import_node_path5.join)(this.rootPath, file.path));
     if (error) {
       throw new Error("\u65E0\u6CD5\u6253\u5F00\u6765\u6E90\u7B14\u8BB0\uFF1A" + error);
     }
@@ -7081,10 +7286,10 @@ function toAgentRunView(run) {
 }
 var workspace = new DesktopKnowledgeWorkspace();
 function userArguments(argv = process.argv) {
-  return import_electron.app.isPackaged ? argv.slice(1) : argv.slice(2);
+  return import_electron2.app.isPackaged ? argv.slice(1) : argv.slice(2);
 }
 function warnAboutUnusablePath(path) {
-  import_electron.dialog.showErrorBox(
+  import_electron2.dialog.showErrorBox(
     "\u77E5\u8BC6\u73AF\u65E0\u6CD5\u6253\u5F00\u8FD9\u4E2A\u77E5\u8BC6\u5E93",
     `\u76EE\u5F55\u4E0D\u5B58\u5728\uFF1A
 ${path}
@@ -7092,8 +7297,44 @@ ${path}
 \u8BF7\u68C0\u67E5\u5FEB\u6377\u65B9\u5F0F\u91CC\u7684\u8DEF\u5F84\uFF0C\u5E94\u7528\u5C06\u6CBF\u7528\u4E0A\u6B21\u6253\u5F00\u7684\u77E5\u8BC6\u5E93\u3002`
   );
 }
+var trayController = null;
+var isQuitting = false;
+function requestComposerFocus(window) {
+  const send = () => window.webContents.send("app:focus-composer");
+  if (window.webContents.isLoading()) {
+    window.webContents.once("did-finish-load", send);
+    return;
+  }
+  send();
+}
+function summonMainWindow() {
+  const existing = import_electron2.BrowserWindow.getAllWindows()[0];
+  const window = existing ?? createWindow();
+  if (window.isMinimized()) {
+    window.restore();
+  }
+  window.show();
+  window.focus();
+  requestComposerFocus(window);
+}
+function hideMainWindow() {
+  const window = import_electron2.BrowserWindow.getAllWindows()[0];
+  if (!window) {
+    return;
+  }
+  window.hide();
+  trayController?.notifyHidden();
+}
+function toggleMainWindow() {
+  const window = import_electron2.BrowserWindow.getAllWindows()[0];
+  if (window?.isVisible()) {
+    hideMainWindow();
+    return;
+  }
+  summonMainWindow();
+}
 function focusMainWindow() {
-  const window = import_electron.BrowserWindow.getAllWindows()[0];
+  const window = import_electron2.BrowserWindow.getAllWindows()[0];
   if (!window) {
     return;
   }
@@ -7113,14 +7354,14 @@ async function switchToRequestedVault(argv) {
     return;
   }
   const state = await workspace.open(requestedRootPath);
-  for (const window of import_electron.BrowserWindow.getAllWindows()) {
+  for (const window of import_electron2.BrowserWindow.getAllWindows()) {
     window.webContents.send("workspace:opened", state);
   }
 }
 async function openInitialWorkspace() {
   const { requestedRootPath, unusableRootPath, showHelp } = parseLaunchArguments(userArguments());
   if (showHelp) {
-    await import_electron.dialog.showMessageBox({ type: "info", title: "\u77E5\u8BC6\u73AF", message: LAUNCH_USAGE, buttons: ["\u77E5\u9053\u4E86"] });
+    await import_electron2.dialog.showMessageBox({ type: "info", title: "\u77E5\u8BC6\u73AF", message: LAUNCH_USAGE, buttons: ["\u77E5\u9053\u4E86"] });
   }
   if (unusableRootPath) {
     warnAboutUnusablePath(unusableRootPath);
@@ -7132,30 +7373,37 @@ async function openInitialWorkspace() {
   await workspace.restore();
 }
 function createWindow() {
-  const window = new import_electron.BrowserWindow(WINDOW_OPTIONS);
+  const window = new import_electron2.BrowserWindow(WINDOW_OPTIONS);
   window.webContents.on("console-message", (details) => {
     console.error("[renderer]", details.sourceId + ":" + details.lineNumber, details.message);
   });
   window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl) => {
     console.error("[renderer-load]", errorCode, errorDescription, validatedUrl);
   });
+  window.on("close", (event) => {
+    if (isQuitting || !trayController) {
+      return;
+    }
+    event.preventDefault();
+    hideMainWindow();
+  });
   void window.loadFile((0, import_node_path5.join)(__dirname, "renderer", "index.html")).catch((error) => {
     console.error("[renderer-load]", error);
-    import_electron.dialog.showErrorBox("\u65E0\u6CD5\u52A0\u8F7D\u754C\u9762", error instanceof Error ? error.message : String(error));
+    import_electron2.dialog.showErrorBox("\u65E0\u6CD5\u52A0\u8F7D\u754C\u9762", error instanceof Error ? error.message : String(error));
   });
   return window;
 }
 function getWorkspaceStatePath() {
-  return (0, import_node_path5.join)(import_electron.app.getPath("userData"), "workspace.json");
+  return (0, import_node_path5.join)(import_electron2.app.getPath("userData"), "workspace.json");
 }
 function getDesktopEnvPath() {
-  return (0, import_node_path5.join)(import_electron.app.getPath("userData"), ".env");
+  return (0, import_node_path5.join)(import_electron2.app.getPath("userData"), ".env");
 }
 function getSessionStatePath() {
-  return (0, import_node_path5.join)(import_electron.app.getPath("userData"), "sessions.json");
+  return (0, import_node_path5.join)(import_electron2.app.getPath("userData"), "sessions.json");
 }
 async function saveWorkspacePath(rootPath) {
-  await (0, import_promises4.mkdir)(import_electron.app.getPath("userData"), { recursive: true });
+  await (0, import_promises4.mkdir)(import_electron2.app.getPath("userData"), { recursive: true });
   await (0, import_promises4.writeFile)(getWorkspaceStatePath(), JSON.stringify({ rootPath }, null, 2), "utf8");
 }
 async function readSessionStates() {
@@ -7168,14 +7416,14 @@ async function readSessionStates() {
   }
 }
 async function writeSessionStates(states) {
-  await (0, import_promises4.mkdir)(import_electron.app.getPath("userData"), { recursive: true });
+  await (0, import_promises4.mkdir)(import_electron2.app.getPath("userData"), { recursive: true });
   await (0, import_promises4.writeFile)(getSessionStatePath(), JSON.stringify({ byWorkspace: states }, null, 2), "utf8");
 }
 function getAttachmentStatePath() {
-  return (0, import_node_path5.join)(import_electron.app.getPath("userData"), "attachments.json");
+  return (0, import_node_path5.join)(import_electron2.app.getPath("userData"), "attachments.json");
 }
 function getIndexSnapshotPath() {
-  return (0, import_node_path5.join)(import_electron.app.getPath("userData"), "index-snapshot.json");
+  return (0, import_node_path5.join)(import_electron2.app.getPath("userData"), "index-snapshot.json");
 }
 async function readAttachmentStates() {
   try {
@@ -7191,7 +7439,7 @@ async function readAttachmentState(rootPath) {
   return states[rootPath] ?? {};
 }
 async function writeAttachmentStates(states) {
-  await (0, import_promises4.mkdir)(import_electron.app.getPath("userData"), { recursive: true });
+  await (0, import_promises4.mkdir)(import_electron2.app.getPath("userData"), { recursive: true });
   await (0, import_promises4.writeFile)(getAttachmentStatePath(), JSON.stringify({ byWorkspace: states }, null, 2), "utf8");
 }
 async function ensureDesktopEnvFile() {
@@ -7205,7 +7453,7 @@ async function ensureDesktopEnvFile() {
     if (!isMissingFileError2(error)) {
       throw error;
     }
-    await (0, import_promises4.mkdir)(import_electron.app.getPath("userData"), { recursive: true });
+    await (0, import_promises4.mkdir)(import_electron2.app.getPath("userData"), { recursive: true });
     await (0, import_promises4.writeFile)(getDesktopEnvPath(), DESKTOP_ENV_TEMPLATE, "utf8");
   }
 }
@@ -7245,7 +7493,7 @@ async function getProviderStatus() {
 }
 async function openDesktopEnvFile() {
   await ensureDesktopEnvFile();
-  const error = await import_electron.shell.openPath(getDesktopEnvPath());
+  const error = await import_electron2.shell.openPath(getDesktopEnvPath());
   if (error) {
     throw new Error("\u65E0\u6CD5\u6253\u5F00\u672C\u5730\u6A21\u578B\u914D\u7F6E\u6587\u4EF6\uFF1A" + error);
   }
@@ -7285,64 +7533,84 @@ function formatIntentAction(intent) {
   };
   return names[intent];
 }
-import_electron.ipcMain.handle("workspace:choose", () => workspace.choose());
-import_electron.ipcMain.handle("workspace:migrate-obsidian", () => workspace.migrateFromObsidian());
-import_electron.ipcMain.handle("workspace:get", () => workspace.getState());
-import_electron.ipcMain.handle("provider:get-status", () => getProviderStatus());
-import_electron.ipcMain.handle("provider:open-config", () => openDesktopEnvFile());
-import_electron.ipcMain.handle("agent:answer", (_event, question, context) => workspace.answer(question, context));
-import_electron.ipcMain.handle(
+import_electron2.ipcMain.handle("workspace:choose", () => workspace.choose());
+import_electron2.ipcMain.handle("workspace:migrate-obsidian", () => workspace.migrateFromObsidian());
+import_electron2.ipcMain.handle("workspace:get", () => workspace.getState());
+import_electron2.ipcMain.handle("provider:get-status", () => getProviderStatus());
+import_electron2.ipcMain.handle("provider:open-config", () => openDesktopEnvFile());
+import_electron2.ipcMain.handle("agent:answer", (_event, question, context) => workspace.answer(question, context));
+import_electron2.ipcMain.handle(
   "agent:answer-stream",
   (event, question, context, runId) => workspace.answerStream(question, context ?? {}, runId ?? "", event.sender)
 );
-import_electron.ipcMain.handle("agent:answer-cancel", (_event, runId) => workspace.cancelAnswerStream(runId ?? ""));
-import_electron.ipcMain.handle("answer:save", (_event, action, subject, content, sources) => workspace.saveAnswer(action, subject, content, sources));
-import_electron.ipcMain.handle("wiki:create-update-preview", (_event, id) => workspace.createWikiUpdatePreview(id));
-import_electron.ipcMain.handle("knowledge:search", (_event, query) => workspace.search(query));
-import_electron.ipcMain.handle("knowledge:list-notes", () => workspace.listNotes());
-import_electron.ipcMain.handle("knowledge:preview-source", (_event, path) => workspace.previewSource(path));
-import_electron.ipcMain.handle("knowledge:open-source", (_event, path) => workspace.openSource(path));
-import_electron.ipcMain.handle("agent:plan-run", (_event, goal, notePath) => {
+import_electron2.ipcMain.handle("agent:answer-cancel", (_event, runId) => workspace.cancelAnswerStream(runId ?? ""));
+import_electron2.ipcMain.handle("answer:save", (_event, action, subject, content, sources) => workspace.saveAnswer(action, subject, content, sources));
+import_electron2.ipcMain.handle("wiki:create-update-preview", (_event, id) => workspace.createWikiUpdatePreview(id));
+import_electron2.ipcMain.handle("knowledge:search", (_event, query) => workspace.search(query));
+import_electron2.ipcMain.handle("knowledge:list-notes", () => workspace.listNotes());
+import_electron2.ipcMain.handle("knowledge:preview-source", (_event, path) => workspace.previewSource(path));
+import_electron2.ipcMain.handle("knowledge:open-source", (_event, path) => workspace.openSource(path));
+import_electron2.ipcMain.handle("agent:plan-run", (_event, goal, notePath) => {
   if (typeof notePath === "string") {
     workspace.setActiveNote(notePath);
   }
   return workspace.planRun(goal);
 });
-import_electron.ipcMain.handle("agent:run-step", (_event, runId, stepId) => workspace.runStep(runId, stepId));
-import_electron.ipcMain.handle("agent:skip-step", (_event, runId, stepId) => workspace.skipStep(runId, stepId));
-import_electron.ipcMain.handle("agent:cancel-run", (_event, runId) => workspace.cancelRun(runId));
-import_electron.ipcMain.handle("write:get-previews", () => workspace.getWritePreviews());
-import_electron.ipcMain.handle("write:apply-previews", () => workspace.applyWritePreviews());
-if (!import_electron.app.requestSingleInstanceLock()) {
-  import_electron.app.quit();
+import_electron2.ipcMain.handle("agent:run-step", (_event, runId, stepId) => workspace.runStep(runId, stepId));
+import_electron2.ipcMain.handle("agent:skip-step", (_event, runId, stepId) => workspace.skipStep(runId, stepId));
+import_electron2.ipcMain.handle("agent:cancel-run", (_event, runId) => workspace.cancelRun(runId));
+import_electron2.ipcMain.handle("write:get-previews", () => workspace.getWritePreviews());
+import_electron2.ipcMain.handle("write:apply-previews", () => workspace.applyWritePreviews());
+if (!import_electron2.app.requestSingleInstanceLock()) {
+  import_electron2.app.quit();
 } else {
-  import_electron.app.on("second-instance", (_event, argv) => {
+  import_electron2.app.on("second-instance", (_event, argv) => {
     focusMainWindow();
     void switchToRequestedVault(argv).catch((error) => {
       console.error("[second-instance]", error);
-      import_electron.dialog.showErrorBox("\u77E5\u8BC6\u73AF", error instanceof Error ? error.message : String(error));
+      import_electron2.dialog.showErrorBox("\u77E5\u8BC6\u73AF", error instanceof Error ? error.message : String(error));
     });
   });
-  import_electron.app.whenReady().then(async () => {
-    import_electron.app.setName("\u77E5\u8BC6\u73AF");
-    import_electron.Menu.setApplicationMenu(null);
+  import_electron2.app.whenReady().then(async () => {
+    import_electron2.app.setName("\u77E5\u8BC6\u73AF");
+    import_electron2.Menu.setApplicationMenu(null);
     await ensureDesktopEnvFile();
     await openInitialWorkspace();
     createWindow();
-    import_electron.app.on("activate", () => {
-      if (import_electron.BrowserWindow.getAllWindows().length === 0) {
+    try {
+      trayController = createTrayController({
+        summon: summonMainWindow,
+        toggle: toggleMainWindow,
+        isVisible: () => import_electron2.BrowserWindow.getAllWindows().some((window) => window.isVisible()),
+        chooseVault: () => {
+          summonMainWindow();
+          void workspace.choose().catch((error) => {
+            console.error("[tray]", error);
+          });
+        },
+        quit: () => import_electron2.app.quit()
+      });
+    } catch (error) {
+      console.error("[tray] \u6258\u76D8\u521B\u5EFA\u5931\u8D25\uFF1A", error);
+    }
+    import_electron2.app.on("activate", () => {
+      if (import_electron2.BrowserWindow.getAllWindows().length === 0) {
         createWindow();
       }
     });
   }).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error("[startup]", error);
-    import_electron.dialog.showErrorBox("\u77E5\u8BC6\u73AF\u542F\u52A8\u5931\u8D25", `\u65E0\u6CD5\u521D\u59CB\u5316\u672C\u5730\u5E94\u7528\u6570\u636E\u76EE\u5F55\uFF1A${message}`);
-    import_electron.app.quit();
+    import_electron2.dialog.showErrorBox("\u77E5\u8BC6\u73AF\u542F\u52A8\u5931\u8D25", `\u65E0\u6CD5\u521D\u59CB\u5316\u672C\u5730\u5E94\u7528\u6570\u636E\u76EE\u5F55\uFF1A${message}`);
+    import_electron2.app.quit();
   });
 }
-import_electron.app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    import_electron.app.quit();
+import_electron2.app.on("before-quit", () => {
+  isQuitting = true;
+  trayController?.dispose();
+});
+import_electron2.app.on("window-all-closed", () => {
+  if (!trayController) {
+    import_electron2.app.quit();
   }
 });

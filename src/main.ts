@@ -29,6 +29,7 @@ import { detectDesktopAgentIntent } from "../core/desktop/desktop-intent-router"
 import { formatPastedContent } from "../core/paste/paste-formatter";
 import type { AgentSessionStoreState } from "../core/memory/agent-memory";
 import { readEnvValue } from "../core/services/env";
+import { createTrayController, type TrayController } from "./tray-controller";
 import type { WebFallbackPolicy } from "../core/services/web-answer-policy";
 import {
   getStandaloneWorkspaceName,
@@ -837,6 +838,53 @@ function warnAboutUnusablePath(path: string): void {
 }
 
 /** Bring the existing window forward instead of starting a second copy. */
+let trayController: TrayController | null = null;
+/** Set while quitting, so the close handler stops intercepting hides. */
+let isQuitting = false;
+
+/**
+ * Ask the renderer to put the cursor in the question box. The window may still
+ * be loading right after a summon, in which case the listener does not exist
+ * yet and the request has to wait for it.
+ */
+function requestComposerFocus(window: BrowserWindow): void {
+  const send = (): void => window.webContents.send("app:focus-composer");
+  if (window.webContents.isLoading()) {
+    window.webContents.once("did-finish-load", send);
+    return;
+  }
+  send();
+}
+
+function summonMainWindow(): void {
+  const existing = BrowserWindow.getAllWindows()[0];
+  const window = existing ?? createWindow();
+  if (window.isMinimized()) {
+    window.restore();
+  }
+  window.show();
+  window.focus();
+  requestComposerFocus(window);
+}
+
+function hideMainWindow(): void {
+  const window = BrowserWindow.getAllWindows()[0];
+  if (!window) {
+    return;
+  }
+  window.hide();
+  trayController?.notifyHidden();
+}
+
+function toggleMainWindow(): void {
+  const window = BrowserWindow.getAllWindows()[0];
+  if (window?.isVisible()) {
+    hideMainWindow();
+    return;
+  }
+  summonMainWindow();
+}
+
 function focusMainWindow(): void {
   const window = BrowserWindow.getAllWindows()[0];
   if (!window) {
@@ -886,6 +934,15 @@ function createWindow(): BrowserWindow {
   });
   window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl) => {
     console.error("[renderer-load]", errorCode, errorDescription, validatedUrl);
+  });
+  // Closing parks the app in the tray: reopening is then instant, and the
+  // index and conversation stay in memory. Quitting is a tray menu item.
+  window.on("close", (event) => {
+    if (isQuitting || !trayController) {
+      return;
+    }
+    event.preventDefault();
+    hideMainWindow();
   });
   void window.loadFile(join(__dirname, "renderer", "index.html")).catch((error) => {
     console.error("[renderer-load]", error);
@@ -1120,6 +1177,27 @@ if (!app.requestSingleInstanceLock()) {
     await openInitialWorkspace();
     createWindow();
 
+    try {
+      trayController = createTrayController({
+        summon: summonMainWindow,
+        toggle: toggleMainWindow,
+        isVisible: () => BrowserWindow.getAllWindows().some((window) => window.isVisible()),
+        chooseVault: () => {
+          // The picker is easier to relate to with the window behind it, and the
+          // picked vault has to be announced to a renderer that exists.
+          summonMainWindow();
+          void workspace.choose().catch((error: unknown) => {
+            console.error("[tray]", error);
+          });
+        },
+        quit: () => app.quit()
+      });
+    } catch (error) {
+      // A missing tray icon is a degraded app, not a failed start — the window
+      // keeps working and closing it quits as before.
+      console.error("[tray] 托盘创建失败：", error);
+    }
+
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         createWindow();
@@ -1133,8 +1211,16 @@ if (!app.requestSingleInstanceLock()) {
   });
 }
 
+// The tray owns the lifetime now, so closing every window no longer quits —
+// otherwise hiding on close and quitting on close would contradict each other.
+app.on("before-quit", () => {
+  isQuitting = true;
+  trayController?.dispose();
+});
+
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
+  // Without a tray there is nothing left to bring the app back with.
+  if (!trayController) {
     app.quit();
   }
 });

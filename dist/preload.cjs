@@ -6,6 +6,13 @@ var api = {
   chooseWorkspace: () => import_electron.ipcRenderer.invoke("workspace:choose"),
   migrateObsidianVault: () => import_electron.ipcRenderer.invoke("workspace:migrate-obsidian"),
   getWorkspace: () => import_electron.ipcRenderer.invoke("workspace:get"),
+  onFocusComposer: (listener) => {
+    const wrapped = () => listener();
+    import_electron.ipcRenderer.on("app:focus-composer", wrapped);
+    return () => {
+      import_electron.ipcRenderer.removeListener("app:focus-composer", wrapped);
+    };
+  },
   onWorkspaceOpened: (listener) => {
     const wrapped = (_event, payload) => listener(payload);
     import_electron.ipcRenderer.on("workspace:opened", wrapped);

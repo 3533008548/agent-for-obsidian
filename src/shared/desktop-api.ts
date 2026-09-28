@@ -165,6 +165,12 @@ export interface DesktopApi {
    * directory argument, typically a desktop shortcut.
    */
   onWorkspaceOpened(listener: (state: WorkspaceState) => void): () => void;
+  /**
+   * Fires when the app is summoned from the tray or the global hotkey: the
+   * window is already in front, so the only thing left is to place the cursor
+   * in the question box.
+   */
+  onFocusComposer(listener: () => void): () => void;
   getProviderStatus(): Promise<ProviderStatus>;
   openModelConfig(): Promise<void>;
   askAgent(question: string, context?: DesktopAgentRequestContext): Promise<DesktopAgentResponse>;

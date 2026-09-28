@@ -59,6 +59,7 @@ export function App() {
   const [isExplorerCollapsed, setIsExplorerCollapsed] = useState(false);
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(() => new Set());
   const bottomRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const activeStreamRef = useRef<{ runId: string; messageId: string } | null>(null);
   const stopRequestedRef = useRef(false);
 
@@ -97,6 +98,22 @@ export function App() {
           text: "已切换到「" + state.displayName + "」。索引 " + state.indexedFiles + " 篇笔记、" + state.chunkCount + " 个片段。"
         }
       ]);
+    });
+  }, [api]);
+
+  useEffect(() => {
+    if (!api?.onFocusComposer) {
+      return;
+    }
+    return api.onFocusComposer(() => {
+      const composer = composerRef.current;
+      if (!composer || composer.disabled) {
+        return;
+      }
+      composer.focus();
+      // Park the caret at the end so a follow-up question continues the text
+      // that was already typed.
+      composer.setSelectionRange(composer.value.length, composer.value.length);
     });
   }, [api]);
 
@@ -693,6 +710,7 @@ export function App() {
 
       <form className={"composer " + (isExplorerCollapsed ? "explorer-collapsed" : "")} onSubmit={submit}>
         <textarea
+          ref={composerRef}
           value={input}
           onChange={(event) => setInput(event.target.value)}
           placeholder={workspace ? "直接提问或下达任务，例如：编译 LangGraph LLM Wiki" : "先在右上角选择知识库"}
