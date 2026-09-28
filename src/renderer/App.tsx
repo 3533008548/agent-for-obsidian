@@ -84,6 +84,23 @@ export function App() {
   }, [api]);
 
   useEffect(() => {
+    if (!api || !api.onWorkspaceOpened) {
+      return;
+    }
+    return api.onWorkspaceOpened((state) => {
+      setWorkspace(state);
+      setMessages((current) => [
+        ...current,
+        {
+          id: "workspace-opened-" + Date.now(),
+          role: "agent",
+          text: "已切换到「" + state.displayName + "」。索引 " + state.indexedFiles + " 篇笔记、" + state.chunkCount + " 个片段。"
+        }
+      ]);
+    });
+  }, [api]);
+
+  useEffect(() => {
     void refreshNotes();
     setCollapsedFolders(new Set());
   }, [api, workspace?.rootPath]);

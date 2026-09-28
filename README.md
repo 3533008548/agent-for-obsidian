@@ -27,6 +27,34 @@ WEB_FALLBACK_POLICY=stable-only
 
 常用命令：`npm.cmd run typecheck`、`npm.cmd test`、`npm.cmd run build`。
 
+### 直接打开指定知识库
+
+不用每次进界面点「打开知识库」：
+
+```powershell
+npm.cmd run start -- "D:\notes"
+npm.cmd run start -- --dir="D:\notes"
+```
+
+也可以直接给一个笔记文件，会打开它所在的目录。不带参数时沿用上次打开的知识库；目录不存在会弹提示而不是静默忽略。
+
+应用同时只会启动一个实例：重复启动会把已有窗口带到前台，如果这次带了**不同的**目录，已有窗口会直接切换过去，不会开第二个进程重复索引。
+
+桌面快捷方式可以指向 `electron.exe`，把「应用目录」和「知识库目录」依次作为参数传入（PowerShell，把 `$vault` 换成你的目录）：
+
+```powershell
+$desktop  = [Environment]::GetFolderPath("Desktop")
+$electron = Join-Path $PWD "node_modules\electron\dist\electron.exe"
+$vault    = "D:\notes"
+$link     = (New-Object -ComObject WScript.Shell).CreateShortcut("$desktop\Knowledge Loop.lnk")
+$link.TargetPath       = $electron
+$link.Arguments        = '"' + $PWD.Path + '" "' + $vault + '"'
+$link.WorkingDirectory = $PWD.Path
+$link.Save()
+```
+
+多个知识库就建多个快捷方式，改 `$vault` 即可。
+
 ## 目录结构
 
 | 目录 | 内容 |
