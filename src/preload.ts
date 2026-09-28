@@ -5,13 +5,6 @@ const api: DesktopApi = {
   chooseWorkspace: () => ipcRenderer.invoke("workspace:choose"),
   migrateObsidianVault: () => ipcRenderer.invoke("workspace:migrate-obsidian"),
   getWorkspace: () => ipcRenderer.invoke("workspace:get"),
-  onFocusComposer: (listener) => {
-    const wrapped = (): void => listener();
-    ipcRenderer.on("app:focus-composer", wrapped);
-    return () => {
-      ipcRenderer.removeListener("app:focus-composer", wrapped);
-    };
-  },
   onWorkspaceOpened: (listener) => {
     const wrapped = (_event: unknown, payload: WorkspaceState): void => listener(payload);
     ipcRenderer.on("workspace:opened", wrapped);
