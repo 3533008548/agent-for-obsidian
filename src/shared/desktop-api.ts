@@ -160,11 +160,6 @@ export interface DesktopApi {
   chooseWorkspace(): Promise<WorkspaceState | null>;
   migrateObsidianVault(): Promise<ObsidianMigrationState | null>;
   getWorkspace(): Promise<WorkspaceState | null>;
-  /**
-   * Fires when the vault is switched outside the UI — another launch with a
-   * directory argument, typically a desktop shortcut.
-   */
-  onWorkspaceOpened(listener: (state: WorkspaceState) => void): () => void;
   getProviderStatus(): Promise<ProviderStatus>;
   openModelConfig(): Promise<void>;
   askAgent(question: string, context?: DesktopAgentRequestContext): Promise<DesktopAgentResponse>;

@@ -48,7 +48,6 @@ import type {
   AgentRunView,
   WritePreviewView
 } from "./shared/desktop-api";
-import { LAUNCH_USAGE, parseLaunchArguments } from "./launch-args";
 
 const WINDOW_OPTIONS = {
   width: 1120,
@@ -94,11 +93,6 @@ class DesktopKnowledgeWorkspace {
   private sessionStates: Record<string, AgentSessionStoreState> = {};
   private didLoadSessionStates = false;
   private readonly policy = new PolicyEngine(createDefaultPermissionPolicy());
-
-  /** Currently open knowledge base, used to tell a repeated launch apart. */
-  get currentRootPath(): string | null {
-    return this.rootPath;
-  }
 
   async restore(): Promise<WorkspaceState | null> {
     try {
@@ -565,11 +559,7 @@ class DesktopKnowledgeWorkspace {
     return matches.length === 1 ? matches[0] : null;
   }
 
-  /**
-   * Index a knowledge base and make it current. Public because the launch
-   * arguments can name a directory directly, bypassing the folder picker.
-   */
-  async open(rootPath: string): Promise<WorkspaceState> {
+  private async open(rootPath: string): Promise<WorkspaceState> {
     const repository = new NodeFileSystemKnowledgeRepository(rootPath);
     const index = new PortableMarkdownKnowledgeIndex(
       repository,
@@ -821,64 +811,6 @@ function toAgentRunView(run: {
 
 const workspace = new DesktopKnowledgeWorkspace();
 
-/**
- * Arguments the user typed or put in a shortcut. `electron .` leaves the app
- * path in argv[1]; a packaged app starts its own arguments right there.
- */
-function userArguments(argv: string[] = process.argv): string[] {
-  return app.isPackaged ? argv.slice(1) : argv.slice(2);
-}
-
-function warnAboutUnusablePath(path: string): void {
-  dialog.showErrorBox(
-    "知识环无法打开这个知识库",
-    `目录不存在：\n${path}\n\n请检查快捷方式里的路径，应用将沿用上次打开的知识库。`
-  );
-}
-
-/** Bring the existing window forward instead of starting a second copy. */
-function focusMainWindow(): void {
-  const window = BrowserWindow.getAllWindows()[0];
-  if (!window) {
-    return;
-  }
-  if (window.isMinimized()) {
-    window.restore();
-  }
-  window.show();
-  window.focus();
-}
-
-async function switchToRequestedVault(argv: string[]): Promise<void> {
-  const { requestedRootPath, unusableRootPath } = parseLaunchArguments(userArguments(argv));
-  if (unusableRootPath) {
-    warnAboutUnusablePath(unusableRootPath);
-    return;
-  }
-  if (!requestedRootPath || requestedRootPath === workspace.currentRootPath) {
-    return;
-  }
-  const state = await workspace.open(requestedRootPath);
-  for (const window of BrowserWindow.getAllWindows()) {
-    window.webContents.send("workspace:opened", state);
-  }
-}
-
-async function openInitialWorkspace(): Promise<void> {
-  const { requestedRootPath, unusableRootPath, showHelp } = parseLaunchArguments(userArguments());
-  if (showHelp) {
-    await dialog.showMessageBox({ type: "info", title: "知识环", message: LAUNCH_USAGE, buttons: ["知道了"] });
-  }
-  if (unusableRootPath) {
-    warnAboutUnusablePath(unusableRootPath);
-  }
-  if (requestedRootPath) {
-    await workspace.open(requestedRootPath);
-    return;
-  }
-  await workspace.restore();
-}
-
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow(WINDOW_OPTIONS);
   window.webContents.on("console-message", (details) => {
@@ -1100,38 +1032,24 @@ ipcMain.handle("agent:cancel-run", (_event, runId: string) => workspace.cancelRu
 ipcMain.handle("write:get-previews", () => workspace.getWritePreviews());
 ipcMain.handle("write:apply-previews", () => workspace.applyWritePreviews());
 
-// One instance only: opening the app twice would index the same vault twice,
-// and a shortcut is bound to be clicked while the window is already open.
-if (!app.requestSingleInstanceLock()) {
+app.whenReady().then(async () => {
+  app.setName("知识环");
+  Menu.setApplicationMenu(null);
+  await ensureDesktopEnvFile();
+  await workspace.restore();
+  createWindow();
+
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+}).catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error("[startup]", error);
+  dialog.showErrorBox("知识环启动失败", `无法初始化本地应用数据目录：${message}`);
   app.quit();
-} else {
-  app.on("second-instance", (_event, argv) => {
-    focusMainWindow();
-    void switchToRequestedVault(argv).catch((error: unknown) => {
-      console.error("[second-instance]", error);
-      dialog.showErrorBox("知识环", error instanceof Error ? error.message : String(error));
-    });
-  });
-
-  app.whenReady().then(async () => {
-    app.setName("知识环");
-    Menu.setApplicationMenu(null);
-    await ensureDesktopEnvFile();
-    await openInitialWorkspace();
-    createWindow();
-
-    app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        createWindow();
-      }
-    });
-  }).catch((error) => {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error("[startup]", error);
-    dialog.showErrorBox("知识环启动失败", `无法初始化本地应用数据目录：${message}`);
-    app.quit();
-  });
-}
+});
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {

@@ -3,7 +3,7 @@
 // src/main.ts
 var import_electron = require("electron");
 var import_promises4 = require("node:fs/promises");
-var import_node_path5 = require("node:path");
+var import_node_path4 = require("node:path");
 
 // core/policy/policy-engine.ts
 function createDefaultPermissionPolicy() {
@@ -6370,60 +6370,6 @@ async function ensureDestinationDoesNotExist(destinationPath) {
   }
 }
 
-// src/launch-args.ts
-var import_node_fs = require("node:fs");
-var import_node_path4 = require("node:path");
-var LAUNCH_USAGE = [
-  "\u7528\u6CD5\uFF1A\u77E5\u8BC6\u73AF [\u77E5\u8BC6\u5E93\u76EE\u5F55]",
-  "",
-  "  <\u76EE\u5F55>            \u76F4\u63A5\u6253\u5F00\u8FD9\u4E2A\u76EE\u5F55\u4E0B\u7684 Markdown \u77E5\u8BC6\u5E93",
-  "  --dir=<\u76EE\u5F55>       \u540C\u4E0A",
-  "  -d <\u76EE\u5F55>          \u540C\u4E0A",
-  "  --help            \u663E\u793A\u8FD9\u6BB5\u8BF4\u660E",
-  "",
-  "\u76EE\u5F55\u91CC\u653E\u7684\u662F\u666E\u901A Markdown \u6587\u4EF6\u5373\u53EF\uFF0C\u4E5F\u53EF\u4EE5\u76F4\u63A5\u7ED9\u4E00\u4E2A .md \u6587\u4EF6\uFF0C\u4F1A\u6253\u5F00\u5B83\u6240\u5728\u7684\u76EE\u5F55\u3002",
-  "\u4E0D\u5E26\u53C2\u6570\u65F6\u6CBF\u7528\u4E0A\u6B21\u6253\u5F00\u7684\u77E5\u8BC6\u5E93\u3002"
-].join("\n");
-function parseLaunchArguments(argv, isDirectory = isExistingDirectory) {
-  let requested = null;
-  let showHelp = false;
-  for (let index = 0; index < argv.length; index += 1) {
-    const argument = argv[index];
-    if (argument === "--help" || argument === "-h") {
-      showHelp = true;
-    } else if (argument.startsWith("--dir=")) {
-      requested ??= unquote(argument.slice("--dir=".length));
-    } else if (argument === "--dir" || argument === "-d") {
-      const next = argv[index + 1];
-      if (next && !next.startsWith("-")) {
-        requested ??= unquote(next);
-        index += 1;
-      }
-    } else if (argument && !argument.startsWith("-")) {
-      requested ??= unquote(argument);
-    }
-  }
-  if (!requested) {
-    return { requestedRootPath: null, unusableRootPath: null, showHelp };
-  }
-  const candidate = (0, import_node_path4.resolve)(requested);
-  const target = /\.(md|markdown)$/iu.test(candidate) ? (0, import_node_path4.dirname)(candidate) : candidate;
-  if (isDirectory(target)) {
-    return { requestedRootPath: target, unusableRootPath: null, showHelp };
-  }
-  return { requestedRootPath: null, unusableRootPath: requested, showHelp };
-}
-function unquote(value) {
-  return value.trim().replace(/^"|"$/gu, "");
-}
-function isExistingDirectory(path) {
-  try {
-    return (0, import_node_fs.statSync)(path).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
 // src/main.ts
 var WINDOW_OPTIONS = {
   width: 1120,
@@ -6433,7 +6379,7 @@ var WINDOW_OPTIONS = {
   title: "\u77E5\u8BC6\u73AF",
   backgroundColor: "#fafafa",
   webPreferences: {
-    preload: (0, import_node_path5.join)(__dirname, "preload.cjs"),
+    preload: (0, import_node_path4.join)(__dirname, "preload.cjs"),
     contextIsolation: true,
     nodeIntegration: false
   }
@@ -6467,10 +6413,6 @@ var DesktopKnowledgeWorkspace = class {
   sessionStates = {};
   didLoadSessionStates = false;
   policy = new PolicyEngine(createDefaultPermissionPolicy());
-  /** Currently open knowledge base, used to tell a repeated launch apart. */
-  get currentRootPath() {
-    return this.rootPath;
-  }
   async restore() {
     try {
       const raw = await (0, import_promises4.readFile)(getWorkspaceStatePath(), "utf8");
@@ -6521,7 +6463,7 @@ var DesktopKnowledgeWorkspace = class {
     }
     const migration = await migrateObsidianVault(
       sourcePath,
-      (0, import_node_path5.join)(parentDirectory, getStandaloneWorkspaceName(sourcePath))
+      (0, import_node_path4.join)(parentDirectory, getStandaloneWorkspaceName(sourcePath))
     );
     return {
       workspace: await this.open(migration.destinationPath),
@@ -6550,7 +6492,7 @@ var DesktopKnowledgeWorkspace = class {
     }
     return (await this.repository.listMarkdownFiles()).filter((file) => !isInternalWorkspacePath(file.path)).map((file) => ({
       path: file.path,
-      title: (0, import_node_path5.basename)(file.path).replace(/\.md$/i, "")
+      title: (0, import_node_path4.basename)(file.path).replace(/\.md$/i, "")
     }));
   }
   async answer(question, context = {}, stream) {
@@ -6827,7 +6769,7 @@ var DesktopKnowledgeWorkspace = class {
     }
     return {
       path: file.path,
-      title: (0, import_node_path5.basename)(file.path).replace(/\.md$/i, ""),
+      title: (0, import_node_path4.basename)(file.path).replace(/\.md$/i, ""),
       content: await this.repository.readText(file.path)
     };
   }
@@ -6839,7 +6781,7 @@ var DesktopKnowledgeWorkspace = class {
     if (!file) {
       throw new Error("\u6765\u6E90\u7B14\u8BB0\u5DF2\u4E0D\u5B58\u5728\u6216\u4E0D\u518D\u662F Markdown \u6587\u4EF6\u3002");
     }
-    const error = await import_electron.shell.openPath((0, import_node_path5.join)(this.rootPath, file.path));
+    const error = await import_electron.shell.openPath((0, import_node_path4.join)(this.rootPath, file.path));
     if (error) {
       throw new Error("\u65E0\u6CD5\u6253\u5F00\u6765\u6E90\u7B14\u8BB0\uFF1A" + error);
     }
@@ -6865,10 +6807,6 @@ var DesktopKnowledgeWorkspace = class {
     );
     return matches.length === 1 ? matches[0] : null;
   }
-  /**
-   * Index a knowledge base and make it current. Public because the launch
-   * arguments can name a directory directly, bypassing the folder picker.
-   */
   async open(rootPath) {
     const repository = new NodeFileSystemKnowledgeRepository(rootPath);
     const index = new PortableMarkdownKnowledgeIndex(
@@ -7052,7 +6990,7 @@ var DesktopKnowledgeWorkspace = class {
     }
     return {
       rootPath: this.rootPath,
-      displayName: (0, import_node_path5.basename)(this.rootPath),
+      displayName: (0, import_node_path4.basename)(this.rootPath),
       indexedFiles: this.summary.indexedFiles,
       skippedFiles: this.summary.skippedFiles,
       chunkCount: this.summary.chunkCount
@@ -7080,57 +7018,6 @@ function toAgentRunView(run) {
   };
 }
 var workspace = new DesktopKnowledgeWorkspace();
-function userArguments(argv = process.argv) {
-  return import_electron.app.isPackaged ? argv.slice(1) : argv.slice(2);
-}
-function warnAboutUnusablePath(path) {
-  import_electron.dialog.showErrorBox(
-    "\u77E5\u8BC6\u73AF\u65E0\u6CD5\u6253\u5F00\u8FD9\u4E2A\u77E5\u8BC6\u5E93",
-    `\u76EE\u5F55\u4E0D\u5B58\u5728\uFF1A
-${path}
-
-\u8BF7\u68C0\u67E5\u5FEB\u6377\u65B9\u5F0F\u91CC\u7684\u8DEF\u5F84\uFF0C\u5E94\u7528\u5C06\u6CBF\u7528\u4E0A\u6B21\u6253\u5F00\u7684\u77E5\u8BC6\u5E93\u3002`
-  );
-}
-function focusMainWindow() {
-  const window = import_electron.BrowserWindow.getAllWindows()[0];
-  if (!window) {
-    return;
-  }
-  if (window.isMinimized()) {
-    window.restore();
-  }
-  window.show();
-  window.focus();
-}
-async function switchToRequestedVault(argv) {
-  const { requestedRootPath, unusableRootPath } = parseLaunchArguments(userArguments(argv));
-  if (unusableRootPath) {
-    warnAboutUnusablePath(unusableRootPath);
-    return;
-  }
-  if (!requestedRootPath || requestedRootPath === workspace.currentRootPath) {
-    return;
-  }
-  const state = await workspace.open(requestedRootPath);
-  for (const window of import_electron.BrowserWindow.getAllWindows()) {
-    window.webContents.send("workspace:opened", state);
-  }
-}
-async function openInitialWorkspace() {
-  const { requestedRootPath, unusableRootPath, showHelp } = parseLaunchArguments(userArguments());
-  if (showHelp) {
-    await import_electron.dialog.showMessageBox({ type: "info", title: "\u77E5\u8BC6\u73AF", message: LAUNCH_USAGE, buttons: ["\u77E5\u9053\u4E86"] });
-  }
-  if (unusableRootPath) {
-    warnAboutUnusablePath(unusableRootPath);
-  }
-  if (requestedRootPath) {
-    await workspace.open(requestedRootPath);
-    return;
-  }
-  await workspace.restore();
-}
 function createWindow() {
   const window = new import_electron.BrowserWindow(WINDOW_OPTIONS);
   window.webContents.on("console-message", (details) => {
@@ -7139,20 +7026,20 @@ function createWindow() {
   window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl) => {
     console.error("[renderer-load]", errorCode, errorDescription, validatedUrl);
   });
-  void window.loadFile((0, import_node_path5.join)(__dirname, "renderer", "index.html")).catch((error) => {
+  void window.loadFile((0, import_node_path4.join)(__dirname, "renderer", "index.html")).catch((error) => {
     console.error("[renderer-load]", error);
     import_electron.dialog.showErrorBox("\u65E0\u6CD5\u52A0\u8F7D\u754C\u9762", error instanceof Error ? error.message : String(error));
   });
   return window;
 }
 function getWorkspaceStatePath() {
-  return (0, import_node_path5.join)(import_electron.app.getPath("userData"), "workspace.json");
+  return (0, import_node_path4.join)(import_electron.app.getPath("userData"), "workspace.json");
 }
 function getDesktopEnvPath() {
-  return (0, import_node_path5.join)(import_electron.app.getPath("userData"), ".env");
+  return (0, import_node_path4.join)(import_electron.app.getPath("userData"), ".env");
 }
 function getSessionStatePath() {
-  return (0, import_node_path5.join)(import_electron.app.getPath("userData"), "sessions.json");
+  return (0, import_node_path4.join)(import_electron.app.getPath("userData"), "sessions.json");
 }
 async function saveWorkspacePath(rootPath) {
   await (0, import_promises4.mkdir)(import_electron.app.getPath("userData"), { recursive: true });
@@ -7172,10 +7059,10 @@ async function writeSessionStates(states) {
   await (0, import_promises4.writeFile)(getSessionStatePath(), JSON.stringify({ byWorkspace: states }, null, 2), "utf8");
 }
 function getAttachmentStatePath() {
-  return (0, import_node_path5.join)(import_electron.app.getPath("userData"), "attachments.json");
+  return (0, import_node_path4.join)(import_electron.app.getPath("userData"), "attachments.json");
 }
 function getIndexSnapshotPath() {
-  return (0, import_node_path5.join)(import_electron.app.getPath("userData"), "index-snapshot.json");
+  return (0, import_node_path4.join)(import_electron.app.getPath("userData"), "index-snapshot.json");
 }
 async function readAttachmentStates() {
   try {
@@ -7313,34 +7200,23 @@ import_electron.ipcMain.handle("agent:skip-step", (_event, runId, stepId) => wor
 import_electron.ipcMain.handle("agent:cancel-run", (_event, runId) => workspace.cancelRun(runId));
 import_electron.ipcMain.handle("write:get-previews", () => workspace.getWritePreviews());
 import_electron.ipcMain.handle("write:apply-previews", () => workspace.applyWritePreviews());
-if (!import_electron.app.requestSingleInstanceLock()) {
+import_electron.app.whenReady().then(async () => {
+  import_electron.app.setName("\u77E5\u8BC6\u73AF");
+  import_electron.Menu.setApplicationMenu(null);
+  await ensureDesktopEnvFile();
+  await workspace.restore();
+  createWindow();
+  import_electron.app.on("activate", () => {
+    if (import_electron.BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+}).catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error("[startup]", error);
+  import_electron.dialog.showErrorBox("\u77E5\u8BC6\u73AF\u542F\u52A8\u5931\u8D25", `\u65E0\u6CD5\u521D\u59CB\u5316\u672C\u5730\u5E94\u7528\u6570\u636E\u76EE\u5F55\uFF1A${message}`);
   import_electron.app.quit();
-} else {
-  import_electron.app.on("second-instance", (_event, argv) => {
-    focusMainWindow();
-    void switchToRequestedVault(argv).catch((error) => {
-      console.error("[second-instance]", error);
-      import_electron.dialog.showErrorBox("\u77E5\u8BC6\u73AF", error instanceof Error ? error.message : String(error));
-    });
-  });
-  import_electron.app.whenReady().then(async () => {
-    import_electron.app.setName("\u77E5\u8BC6\u73AF");
-    import_electron.Menu.setApplicationMenu(null);
-    await ensureDesktopEnvFile();
-    await openInitialWorkspace();
-    createWindow();
-    import_electron.app.on("activate", () => {
-      if (import_electron.BrowserWindow.getAllWindows().length === 0) {
-        createWindow();
-      }
-    });
-  }).catch((error) => {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error("[startup]", error);
-    import_electron.dialog.showErrorBox("\u77E5\u8BC6\u73AF\u542F\u52A8\u5931\u8D25", `\u65E0\u6CD5\u521D\u59CB\u5316\u672C\u5730\u5E94\u7528\u6570\u636E\u76EE\u5F55\uFF1A${message}`);
-    import_electron.app.quit();
-  });
-}
+});
 import_electron.app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     import_electron.app.quit();

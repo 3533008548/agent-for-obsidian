@@ -1,17 +1,10 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { DesktopAgentStreamEvent, DesktopApi, WorkspaceState } from "./shared/desktop-api";
+import type { DesktopAgentStreamEvent, DesktopApi } from "./shared/desktop-api";
 
 const api: DesktopApi = {
   chooseWorkspace: () => ipcRenderer.invoke("workspace:choose"),
   migrateObsidianVault: () => ipcRenderer.invoke("workspace:migrate-obsidian"),
   getWorkspace: () => ipcRenderer.invoke("workspace:get"),
-  onWorkspaceOpened: (listener) => {
-    const wrapped = (_event: unknown, payload: WorkspaceState): void => listener(payload);
-    ipcRenderer.on("workspace:opened", wrapped);
-    return () => {
-      ipcRenderer.removeListener("workspace:opened", wrapped);
-    };
-  },
   getProviderStatus: () => ipcRenderer.invoke("provider:get-status"),
   openModelConfig: () => ipcRenderer.invoke("provider:open-config"),
   askAgent: (question, context) => ipcRenderer.invoke("agent:answer", question, context),
