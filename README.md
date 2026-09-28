@@ -27,6 +27,8 @@ WEB_FALLBACK_POLICY=stable-only
 
 常用命令：`npm.cmd run typecheck`、`npm.cmd test`、`npm.cmd run build`。
 
+不想敲命令的话，双击项目根目录的 `start-knowledge-loop.bat` 即可（首次运行或 `dist/` 缺失时会自动先构建）。把它复制到桌面或固定到任务栏也可以——脚本用 `%~dp0` 定位自身所在目录，跟着项目一起移动仍然有效。改了代码之后需要先跑一次 `npm.cmd run build`，双击启动用的是已构建的产物。
+
 ## 目录结构
 
 | 目录 | 内容 |
