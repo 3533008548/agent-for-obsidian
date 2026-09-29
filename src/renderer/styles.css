@@ -825,6 +825,74 @@ h1 {
   white-space: pre-wrap;
 }
 
+.health-card {
+  border: 1px solid #f0d9b8;
+  border-radius: 14px;
+  background: #fffaf1;
+  padding: 16px 18px;
+  margin: 14px 0 0;
+}
+
+.health-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.health-card-eyebrow {
+  margin: 0;
+  font-size: 12px;
+  color: #9a6a1f;
+}
+
+.health-card h3 {
+  margin: 4px 0 2px;
+  font-size: 15px;
+}
+
+.health-card small {
+  color: #83838d;
+  font-size: 12px;
+}
+
+.health-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.health-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  background: #fff;
+  border: 1px solid #f2e6d2;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.health-topic {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.health-detail {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: #83838d;
+}
+
+.health-errors {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: #83838d;
+}
+
 .composer .composer-stop {
   background: #fdecec;
   color: #a32d2d;

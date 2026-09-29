@@ -248,6 +248,63 @@ export function updateLlmWikiTopicSourceHealth(
   return { ...registry, topics };
 }
 
+/**
+ * Aligns the Error Book with the health recorded on each topic.
+ *
+ * Health is refreshed by re-reading the sources, so an entry has to be closed
+ * again once the topic is back in sync — otherwise the Error Book keeps nagging
+ * about drift that was already fixed by the last incremental compilation.
+ */
+export function syncWikiSourceErrors(
+  registry: LlmWikiRegistry,
+  observedAt = new Date().toISOString()
+): LlmWikiRegistry {
+  const driftingPaths = new Set(registry.topics
+    .filter((topic) => hasSourceHealthIssue(topic.sourceHealth))
+    .map((topic) => topic.indexPath));
+  const errorBook = registry.errorBook.map((error) => (
+    error.type === "source-stale" && error.status === "open" && !driftingPaths.has(error.path)
+      ? { ...error, status: "closed" as const }
+      : error
+  ));
+  const alreadyReported = new Set(errorBook
+    .filter((error) => error.type === "source-stale" && error.status === "open")
+    .map((error) => error.path));
+  for (const topic of registry.topics) {
+    if (!driftingPaths.has(topic.indexPath) || alreadyReported.has(topic.indexPath)) {
+      continue;
+    }
+    errorBook.push({
+      id: `source-stale-${hashText(topic.indexPath)}`,
+      type: "source-stale",
+      path: topic.indexPath,
+      detail: `主题“${topic.topic}”的${describeSourceDrift(topic.sourceHealth ?? [])}，需要增量编译。`,
+      rule: "来源哈希变化时，重新编译引用该来源的 Wiki 页面。",
+      status: "open",
+      observedAt
+    });
+  }
+  return { ...registry, errorBook: errorBook.slice(-120) };
+}
+
+function describeSourceDrift(sourceHealth: LlmWikiSourceHealth[]): string {
+  const changed = sourceHealth.filter((source) => source.status === "changed").length;
+  const missing = sourceHealth.filter((source) => source.status === "missing").length;
+  const parts: string[] = [];
+  if (changed) {
+    parts.push(`${changed} 篇来源已修改`);
+  }
+  if (missing) {
+    parts.push(`${missing} 篇来源已删除`);
+  }
+  return parts.length ? parts.join("、") : "来源已变化";
+}
+
+/** Root folder of the compiled Wiki inside the knowledge-system folder. */
+export function llmWikiFolderPath(knowledgeSystemFolder: string): string {
+  return `${normalizePath(knowledgeSystemFolder)}/${LLM_WIKI_FOLDER}`;
+}
+
 export function getLlmWikiTopicId(topic: string): string {
   return sanitizePathSegment(topic);
 }

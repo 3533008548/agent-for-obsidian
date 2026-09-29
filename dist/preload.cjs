@@ -20,6 +20,7 @@ var api = {
   },
   saveAnswer: (action, subject, content, sources) => import_electron.ipcRenderer.invoke("answer:save", action, subject, content, sources),
   createWikiUpdatePreview: (id) => import_electron.ipcRenderer.invoke("wiki:create-update-preview", id),
+  reviewWikiHealth: () => import_electron.ipcRenderer.invoke("wiki:health-review"),
   search: (query) => import_electron.ipcRenderer.invoke("knowledge:search", query),
   listNotes: () => import_electron.ipcRenderer.invoke("knowledge:list-notes"),
   previewSource: (path) => import_electron.ipcRenderer.invoke("knowledge:preview-source", path),

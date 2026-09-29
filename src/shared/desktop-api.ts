@@ -1,3 +1,8 @@
+import type {
+  DesktopWikiHealthReview,
+  DesktopWikiTopicHealth
+} from "../../core/desktop/desktop-wiki-service";
+
 export interface WorkspaceState {
   rootPath: string;
   displayName: string;
@@ -102,6 +107,9 @@ export interface DesktopWikiUpdatePreview {
   afterContent: string;
 }
 
+export type WikiHealthReview = DesktopWikiHealthReview;
+export type WikiTopicHealth = DesktopWikiTopicHealth;
+
 export interface ProviderStatus {
   deepSeekConfigured: boolean;
   tavilyConfigured: boolean;
@@ -177,6 +185,8 @@ export interface DesktopApi {
   ): () => void;
   saveAnswer(action: DesktopCaptureAction, subject: string, content: string, sources: DesktopAgentSource[]): Promise<DesktopWriteResult>;
   createWikiUpdatePreview(id: string): Promise<DesktopWikiUpdatePreview[]>;
+  /** Re-checks compiled Wiki topics against the notes they came from. */
+  reviewWikiHealth(): Promise<WikiHealthReview | null>;
   search(query: string): Promise<DesktopSearchHit[]>;
   listNotes(): Promise<DesktopNoteEntry[]>;
   previewSource(path: string): Promise<DesktopFilePreview>;

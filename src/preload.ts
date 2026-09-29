@@ -20,6 +20,7 @@ const api: DesktopApi = {
   },
   saveAnswer: (action, subject, content, sources) => ipcRenderer.invoke("answer:save", action, subject, content, sources),
   createWikiUpdatePreview: (id) => ipcRenderer.invoke("wiki:create-update-preview", id),
+  reviewWikiHealth: () => ipcRenderer.invoke("wiki:health-review"),
   search: (query) => ipcRenderer.invoke("knowledge:search", query),
   listNotes: () => ipcRenderer.invoke("knowledge:list-notes"),
   previewSource: (path) => ipcRenderer.invoke("knowledge:preview-source", path),

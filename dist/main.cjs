@@ -4170,6 +4170,41 @@ function updateLlmWikiTopicSourceHealth(registry, topicId, sourceHealth) {
   } : topic);
   return { ...registry, topics };
 }
+function syncWikiSourceErrors(registry, observedAt = (/* @__PURE__ */ new Date()).toISOString()) {
+  const driftingPaths = new Set(registry.topics.filter((topic) => hasSourceHealthIssue(topic.sourceHealth)).map((topic) => topic.indexPath));
+  const errorBook = registry.errorBook.map((error) => error.type === "source-stale" && error.status === "open" && !driftingPaths.has(error.path) ? { ...error, status: "closed" } : error);
+  const alreadyReported = new Set(errorBook.filter((error) => error.type === "source-stale" && error.status === "open").map((error) => error.path));
+  for (const topic of registry.topics) {
+    if (!driftingPaths.has(topic.indexPath) || alreadyReported.has(topic.indexPath)) {
+      continue;
+    }
+    errorBook.push({
+      id: `source-stale-${hashText(topic.indexPath)}`,
+      type: "source-stale",
+      path: topic.indexPath,
+      detail: `\u4E3B\u9898\u201C${topic.topic}\u201D\u7684${describeSourceDrift(topic.sourceHealth ?? [])}\uFF0C\u9700\u8981\u589E\u91CF\u7F16\u8BD1\u3002`,
+      rule: "\u6765\u6E90\u54C8\u5E0C\u53D8\u5316\u65F6\uFF0C\u91CD\u65B0\u7F16\u8BD1\u5F15\u7528\u8BE5\u6765\u6E90\u7684 Wiki \u9875\u9762\u3002",
+      status: "open",
+      observedAt
+    });
+  }
+  return { ...registry, errorBook: errorBook.slice(-120) };
+}
+function describeSourceDrift(sourceHealth) {
+  const changed = sourceHealth.filter((source) => source.status === "changed").length;
+  const missing = sourceHealth.filter((source) => source.status === "missing").length;
+  const parts = [];
+  if (changed) {
+    parts.push(`${changed} \u7BC7\u6765\u6E90\u5DF2\u4FEE\u6539`);
+  }
+  if (missing) {
+    parts.push(`${missing} \u7BC7\u6765\u6E90\u5DF2\u5220\u9664`);
+  }
+  return parts.length ? parts.join("\u3001") : "\u6765\u6E90\u5DF2\u53D8\u5316";
+}
+function llmWikiFolderPath(knowledgeSystemFolder) {
+  return `${normalizePath(knowledgeSystemFolder)}/${LLM_WIKI_FOLDER}`;
+}
 function getLlmWikiTopicId(topic) {
   return sanitizePathSegment(topic);
 }
@@ -4448,7 +4483,20 @@ var DesktopWikiService = class {
   policy;
   configuration;
   knowledgeSystemFolder;
+  get wikiFolder() {
+    return llmWikiFolderPath(this.knowledgeSystemFolder);
+  }
   get registryPath() {
+    return `${this.wikiFolder}/_system/registry.json`;
+  }
+  /**
+   * Where the registry landed while the folder join dropped its separator.
+   *
+   * Still read as a fallback so a Wiki compiled before the fix keeps its
+   * coverage instead of silently starting over; writes always go to the
+   * correct path.
+   */
+  get legacyRegistryPath() {
     return `${this.knowledgeSystemFolder.replace(/\\/g, "/").replace(/\/+$/u, "/")}LLM Wiki/_system/registry.json`;
   }
   async compile(topic, mode = "compile") {
@@ -4459,7 +4507,7 @@ var DesktopWikiService = class {
     if (!this.configuration.deepSeekApiKey.trim()) {
       throw new Error("\u8BF7\u5148\u5728\u6A21\u578B\u914D\u7F6E\u4E2D\u586B\u5199 DEEPSEEK_API_KEY\u3002");
     }
-    const wikiPrefix = `${this.knowledgeSystemFolder.replace(/\\/g, "/").replace(/\/+$/u, "/")}LLM Wiki/`;
+    const wikiPrefix = `${this.wikiFolder}/`;
     const registry = await this.readRegistry();
     const previousTopic = registry.topics.find((record) => record.id === getLlmWikiTopicId(normalizedTopic));
     const sourceHealth = mode === "expand" && previousTopic ? await this.inspectTopicSources(previousTopic) : [];
@@ -4526,7 +4574,7 @@ var DesktopWikiService = class {
     if (!this.configuration.deepSeekApiKey.trim()) {
       throw new Error("\u8BF7\u5148\u5728\u6A21\u578B\u914D\u7F6E\u4E2D\u586B\u5199 DEEPSEEK_API_KEY\u3002");
     }
-    const wikiPrefix = `${this.knowledgeSystemFolder.replace(/\\/g, "/").replace(/\/+$/u, "/")}LLM Wiki/`;
+    const wikiPrefix = `${this.wikiFolder}/`;
     const registry = await this.readRegistry();
     const previousTopic = registry.topics.find((record) => record.id === getLlmWikiTopicId(normalizedTopic));
     const sourceHealth = mode === "expand" && previousTopic ? await this.inspectTopicSources(previousTopic) : [];
@@ -4585,6 +4633,47 @@ var DesktopWikiService = class {
       sourceHealth: summarizeSourceHealth(sources),
       sources
     };
+  }
+  /**
+   * Re-reads every recorded source and reports which topics drifted.
+   *
+   * `sourceHealth` and the `stale` status were written but never read back, so
+   * a compiled Wiki could silently fall behind the notes it came from. This is
+   * the consumer: it refreshes the health, opens an Error Book entry for topics
+   * that drifted, and closes the entry again once they are back in sync.
+   *
+   * Topic status is updated as a side effect — it is the same information the
+   * next compilation reads to decide what counts as new or changed evidence.
+   */
+  async reviewHealth() {
+    const registry = await this.readRegistry();
+    const checkedAt = (/* @__PURE__ */ new Date()).toISOString();
+    if (!registry.topics.length) {
+      return { checkedAt, topics: [], openErrors: openErrorsOf(registry) };
+    }
+    let next = registry;
+    const topics = [];
+    for (const topic of registry.topics) {
+      const health = await this.inspectTopicSources(topic);
+      next = updateLlmWikiTopicSourceHealth(next, topic.id, health);
+      const changedSources = health.filter((source) => source.status === "changed").map((source) => source.pathOrUrl);
+      const missingSources = health.filter((source) => source.status === "missing").map((source) => source.pathOrUrl);
+      if (changedSources.length || missingSources.length) {
+        topics.push({
+          id: topic.id,
+          topic: topic.topic,
+          indexPath: topic.indexPath,
+          updatedAt: topic.updatedAt,
+          changedSources,
+          missingSources
+        });
+      }
+    }
+    next = syncWikiSourceErrors(next, checkedAt);
+    if (JSON.stringify(next) !== JSON.stringify(registry)) {
+      await this.persistRegistry(next);
+    }
+    return { checkedAt, topics, openErrors: openErrorsOf(next) };
   }
   collectSources(topic, wikiPrefix, previousTopic, mode) {
     const queries = [topic, ...topic.split(/[\s,，、；;]+/u).filter((term) => term.length >= 2)];
@@ -4664,8 +4753,12 @@ var DesktopWikiService = class {
     return { content: answer.content, paths: pages.map((page) => page.path) };
   }
   async readRegistry() {
+    const registry = await this.readRegistryAt(this.registryPath);
+    return registry.topics.length || registry.errorBook.length ? registry : this.readRegistryAt(this.legacyRegistryPath);
+  }
+  async readRegistryAt(path) {
     try {
-      const raw = await this.repository.readRaw(this.registryPath);
+      const raw = await this.repository.readRaw(path);
       const value = JSON.parse(raw);
       return createLlmWikiRegistry(value);
     } catch {
@@ -4799,6 +4892,9 @@ function sourceKey(source) {
 }
 function normalizePath2(path) {
   return path.replace(/\\/g, "/").replace(/\/+$/u, "");
+}
+function openErrorsOf(registry) {
+  return registry.errorBook.filter((error) => error.status === "open");
 }
 function summarizeSourceHealth(sources) {
   return sources.reduce((summary, source) => {
@@ -6689,6 +6785,26 @@ var DesktopKnowledgeWorkspace = class {
     this.wikiService = new DesktopWikiService(this.repository, this.index, this.policy, configuration);
     return this.wikiService.inspectSources(topic);
   }
+  /**
+   * Re-checks every compiled Wiki topic against the notes on disk.
+   *
+   * Local file reads only — no model call — so it is cheap enough to run when
+   * the vault opens. Returns null when no vault is open yet.
+   */
+  async reviewWikiHealth() {
+    if (!this.repository || !this.index) {
+      return null;
+    }
+    if (!this.wikiService) {
+      this.wikiService = new DesktopWikiService(
+        this.repository,
+        this.index,
+        this.policy,
+        await readDesktopAgentConfiguration()
+      );
+    }
+    return this.wikiService.reviewHealth();
+  }
   async scanAttachments() {
     if (!this.attachmentService || !this.rootPath) {
       throw new Error("\u8BF7\u5148\u9009\u62E9\u6216\u8FC1\u79FB\u672C\u5730\u77E5\u8BC6\u5E93\u3002 ");
@@ -7185,6 +7301,7 @@ import_electron.ipcMain.handle(
 import_electron.ipcMain.handle("agent:answer-cancel", (_event, runId) => workspace.cancelAnswerStream(runId ?? ""));
 import_electron.ipcMain.handle("answer:save", (_event, action, subject, content, sources) => workspace.saveAnswer(action, subject, content, sources));
 import_electron.ipcMain.handle("wiki:create-update-preview", (_event, id) => workspace.createWikiUpdatePreview(id));
+import_electron.ipcMain.handle("wiki:health-review", () => workspace.reviewWikiHealth());
 import_electron.ipcMain.handle("knowledge:search", (_event, query) => workspace.search(query));
 import_electron.ipcMain.handle("knowledge:list-notes", () => workspace.listNotes());
 import_electron.ipcMain.handle("knowledge:preview-source", (_event, path) => workspace.previewSource(path));

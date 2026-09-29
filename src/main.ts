@@ -46,7 +46,8 @@ import type {
   SessionStatus,
   WorkspaceState,
   AgentRunView,
-  WritePreviewView
+  WritePreviewView,
+  WikiHealthReview
 } from "./shared/desktop-api";
 
 const WINDOW_OPTIONS = {
@@ -425,6 +426,27 @@ class DesktopKnowledgeWorkspace {
     const configuration = await readDesktopAgentConfiguration();
     this.wikiService = new DesktopWikiService(this.repository, this.index, this.policy, configuration);
     return this.wikiService.inspectSources(topic);
+  }
+
+  /**
+   * Re-checks every compiled Wiki topic against the notes on disk.
+   *
+   * Local file reads only — no model call — so it is cheap enough to run when
+   * the vault opens. Returns null when no vault is open yet.
+   */
+  async reviewWikiHealth(): Promise<WikiHealthReview | null> {
+    if (!this.repository || !this.index) {
+      return null;
+    }
+    if (!this.wikiService) {
+      this.wikiService = new DesktopWikiService(
+        this.repository,
+        this.index,
+        this.policy,
+        await readDesktopAgentConfiguration()
+      );
+    }
+    return this.wikiService.reviewHealth();
   }
 
   private async scanAttachments(): Promise<{ queued: number; unchanged: number; blocked: number; removed: number; unsupportedPdfCount: number }> {
@@ -1016,6 +1038,7 @@ ipcMain.handle(
 ipcMain.handle("agent:answer-cancel", (_event, runId: string) => workspace.cancelAnswerStream(runId ?? ""));
 ipcMain.handle("answer:save", (_event, action, subject, content, sources) => workspace.saveAnswer(action, subject, content, sources));
 ipcMain.handle("wiki:create-update-preview", (_event, id: string) => workspace.createWikiUpdatePreview(id));
+ipcMain.handle("wiki:health-review", () => workspace.reviewWikiHealth());
 ipcMain.handle("knowledge:search", (_event, query: string) => workspace.search(query));
 ipcMain.handle("knowledge:list-notes", () => workspace.listNotes());
 ipcMain.handle("knowledge:preview-source", (_event, path: string) => workspace.previewSource(path));

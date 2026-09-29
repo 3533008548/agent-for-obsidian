@@ -7,9 +7,22 @@ import type {
   DesktopWikiUpdatePreview,
   DesktopWikiVerificationReport,
   ProviderStatus,
+  WikiHealthReview,
+  WikiTopicHealth,
   WorkspaceState,
   WritePreviewView
 } from "../shared/desktop-api";
+
+function describeTopicDrift(topic: WikiTopicHealth): string {
+  const parts: string[] = [];
+  if (topic.changedSources.length) {
+    parts.push(`${topic.changedSources.length} 篇被修改`);
+  }
+  if (topic.missingSources.length) {
+    parts.push(`${topic.missingSources.length} 篇已删除`);
+  }
+  return parts.join("、");
+}
 
 const STEP_STATUS_LABELS: Record<AgentRunView["steps"][number]["status"], string> = {
   pending: "待执行",
@@ -51,6 +64,7 @@ export function App() {
   const [isCreatingWikiUpdate, setIsCreatingWikiUpdate] = useState(false);
   const [run, setRun] = useState<AgentRunView | null>(null);
   const [writePreviews, setWritePreviews] = useState<WritePreviewView[]>([]);
+  const [wikiHealth, setWikiHealth] = useState<WikiHealthReview | null>(null);
   const [isPlanning, setIsPlanning] = useState(false);
   const [isRunningStep, setIsRunningStep] = useState(false);
   const [filePreview, setFilePreview] = useState<DesktopFilePreview | null>(null);
@@ -86,6 +100,10 @@ export function App() {
   useEffect(() => {
     void refreshNotes();
     setCollapsedFolders(new Set());
+  }, [api, workspace?.rootPath]);
+
+  useEffect(() => {
+    void refreshWikiHealth();
   }, [api, workspace?.rootPath]);
 
   useEffect(() => {
@@ -219,6 +237,23 @@ export function App() {
     setNotes(await api.listNotes());
   }
 
+  /**
+   * A Wiki is written once and then drifts. This is the check that notices:
+   * it re-reads the sources behind every compiled topic and reports the ones
+   * that no longer match. Failure is non-fatal — no Wiki compiled yet is the
+   * normal case, and a hint is not worth an error message.
+   */
+  async function refreshWikiHealth(): Promise<void> {
+    if (!api) {
+      return;
+    }
+    try {
+      setWikiHealth((await api.reviewWikiHealth()) ?? null);
+    } catch {
+      setWikiHealth(null);
+    }
+  }
+
   function toggleFolder(path: string): void {
     setCollapsedFolders((current) => {
       const next = new Set(current);
@@ -233,7 +268,15 @@ export function App() {
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    const query = input.trim();
+    await sendQuery(input.trim());
+  }
+
+  /**
+   * Sends a goal through the same pipeline as typed input — including the
+   * intent router, which is what turns "增量编译 X" into an expansion of the
+   * existing topic instead of a brand-new one.
+   */
+  async function sendQuery(query: string): Promise<void> {
     if (!query || isSearching) {
       return;
     }
@@ -285,6 +328,7 @@ export function App() {
       if (answer.intent && answer.intent !== "answer") {
         setWorkspace(await api.getWorkspace());
         await refreshNotes();
+        void refreshWikiHealth();
       }
       if (answer.profilePath) {
         await previewSource(answer.profilePath);
@@ -399,6 +443,7 @@ export function App() {
       ]);
       setWorkspace(await api.getWorkspace());
       await refreshNotes();
+      void refreshWikiHealth();
     } catch (error) {
       appendError(error);
     }
@@ -668,6 +713,38 @@ export function App() {
                 </li>
               ))}
             </ul>
+          </section>
+        ) : null}
+        {wikiHealth && wikiHealth.topics.length ? (
+          <section className="health-card" aria-label="Wiki 来源健康">
+            <header className="health-card-header">
+              <div>
+                <p className="health-card-eyebrow">Wiki 来源已变化</p>
+                <h3>{wikiHealth.topics.length} 个主题需要增量编译</h3>
+                <small>这些主题引用的笔记已被修改或删除，Wiki 页面仍是旧内容。</small>
+              </div>
+              <button type="button" onClick={() => setWikiHealth(null)}>忽略</button>
+            </header>
+            <ul className="health-list">
+              {wikiHealth.topics.map((topic) => (
+                <li key={topic.id}>
+                  <div>
+                    <p className="health-topic">{topic.topic}</p>
+                    <p className="health-detail">{describeTopicDrift(topic)}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void sendQuery(`增量编译 ${topic.topic} LLM Wiki`)}
+                    disabled={isSearching}
+                  >
+                    增量编译
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {wikiHealth.openErrors.length ? (
+              <p className="health-errors">Error Book 还有 {wikiHealth.openErrors.length} 条未关闭条目。</p>
+            ) : null}
           </section>
         ) : null}
         <div ref={bottomRef} />

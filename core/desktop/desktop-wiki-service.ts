@@ -5,10 +5,13 @@ import {
   createLlmWikiRegistry,
   getLinkedWikiPages,
   getLlmWikiTopicId,
+  llmWikiFolderPath,
   searchLlmWiki,
+  syncWikiSourceErrors,
   updateLlmWikiTopicSourceHealth,
   type LlmWikiCompilationMode,
   type LlmWikiCoverageReport,
+  type LlmWikiError,
   type LlmWikiPageRecord,
   type LlmWikiRegistry,
   type LlmWikiSourceHealth,
@@ -59,6 +62,29 @@ export interface DesktopWikiSourceHealthResult {
   sources: LlmWikiSourceHealth[];
 }
 
+/** One compiled topic whose sources no longer match what was compiled. */
+export interface DesktopWikiTopicHealth {
+  id: string;
+  topic: string;
+  indexPath: string;
+  updatedAt: string;
+  changedSources: string[];
+  missingSources: string[];
+}
+
+/**
+ * Result of re-checking every compiled topic against the files on disk.
+ *
+ * `topics` only contains topics that actually drifted; `openErrors` is the
+ * unresolved part of the Error Book, which also holds link and validation
+ * problems unrelated to source drift.
+ */
+export interface DesktopWikiHealthReview {
+  checkedAt: string;
+  topics: DesktopWikiTopicHealth[];
+  openErrors: LlmWikiError[];
+}
+
 export interface DesktopWikiPageContent {
   path: string;
   title: string;
@@ -103,7 +129,22 @@ export class DesktopWikiService {
     this.knowledgeSystemFolder = configuration.knowledgeSystemFolder ?? "知识体系/Agent";
   }
 
+  private get wikiFolder(): string {
+    return llmWikiFolderPath(this.knowledgeSystemFolder);
+  }
+
   private get registryPath(): string {
+    return `${this.wikiFolder}/_system/registry.json`;
+  }
+
+  /**
+   * Where the registry landed while the folder join dropped its separator.
+   *
+   * Still read as a fallback so a Wiki compiled before the fix keeps its
+   * coverage instead of silently starting over; writes always go to the
+   * correct path.
+   */
+  private get legacyRegistryPath(): string {
     return `${this.knowledgeSystemFolder.replace(/\\/g, "/").replace(/\/+$/u, "/")}LLM Wiki/_system/registry.json`;
   }
 
@@ -115,7 +156,7 @@ export class DesktopWikiService {
     if (!this.configuration.deepSeekApiKey.trim()) {
       throw new Error("请先在模型配置中填写 DEEPSEEK_API_KEY。");
     }
-    const wikiPrefix = `${this.knowledgeSystemFolder.replace(/\\/g, "/").replace(/\/+$/u, "/")}LLM Wiki/`;
+    const wikiPrefix = `${this.wikiFolder}/`;
     const registry = await this.readRegistry();
     const previousTopic = registry.topics.find((record) => record.id === getLlmWikiTopicId(normalizedTopic));
     const sourceHealth = mode === "expand" && previousTopic ? await this.inspectTopicSources(previousTopic) : [];
@@ -183,7 +224,7 @@ export class DesktopWikiService {
     if (!this.configuration.deepSeekApiKey.trim()) {
       throw new Error("请先在模型配置中填写 DEEPSEEK_API_KEY。");
     }
-    const wikiPrefix = `${this.knowledgeSystemFolder.replace(/\\/g, "/").replace(/\/+$/u, "/")}LLM Wiki/`;
+    const wikiPrefix = `${this.wikiFolder}/`;
     const registry = await this.readRegistry();
     const previousTopic = registry.topics.find((record) => record.id === getLlmWikiTopicId(normalizedTopic));
     const sourceHealth = mode === "expand" && previousTopic ? await this.inspectTopicSources(previousTopic) : [];
@@ -244,6 +285,48 @@ export class DesktopWikiService {
       sourceHealth: summarizeSourceHealth(sources),
       sources
     };
+  }
+
+  /**
+   * Re-reads every recorded source and reports which topics drifted.
+   *
+   * `sourceHealth` and the `stale` status were written but never read back, so
+   * a compiled Wiki could silently fall behind the notes it came from. This is
+   * the consumer: it refreshes the health, opens an Error Book entry for topics
+   * that drifted, and closes the entry again once they are back in sync.
+   *
+   * Topic status is updated as a side effect — it is the same information the
+   * next compilation reads to decide what counts as new or changed evidence.
+   */
+  async reviewHealth(): Promise<DesktopWikiHealthReview> {
+    const registry = await this.readRegistry();
+    const checkedAt = new Date().toISOString();
+    if (!registry.topics.length) {
+      return { checkedAt, topics: [], openErrors: openErrorsOf(registry) };
+    }
+    let next = registry;
+    const topics: DesktopWikiTopicHealth[] = [];
+    for (const topic of registry.topics) {
+      const health = await this.inspectTopicSources(topic);
+      next = updateLlmWikiTopicSourceHealth(next, topic.id, health);
+      const changedSources = health.filter((source) => source.status === "changed").map((source) => source.pathOrUrl);
+      const missingSources = health.filter((source) => source.status === "missing").map((source) => source.pathOrUrl);
+      if (changedSources.length || missingSources.length) {
+        topics.push({
+          id: topic.id,
+          topic: topic.topic,
+          indexPath: topic.indexPath,
+          updatedAt: topic.updatedAt,
+          changedSources,
+          missingSources
+        });
+      }
+    }
+    next = syncWikiSourceErrors(next, checkedAt);
+    if (JSON.stringify(next) !== JSON.stringify(registry)) {
+      await this.persistRegistry(next);
+    }
+    return { checkedAt, topics, openErrors: openErrorsOf(next) };
   }
 
   private collectSources(
@@ -342,8 +425,15 @@ export class DesktopWikiService {
   }
 
   private async readRegistry(): Promise<LlmWikiRegistry> {
+    const registry = await this.readRegistryAt(this.registryPath);
+    return registry.topics.length || registry.errorBook.length
+      ? registry
+      : this.readRegistryAt(this.legacyRegistryPath);
+  }
+
+  private async readRegistryAt(path: string): Promise<LlmWikiRegistry> {
     try {
-      const raw = await this.repository.readRaw(this.registryPath);
+      const raw = await this.repository.readRaw(path);
       const value = JSON.parse(raw) as Partial<LlmWikiRegistry>;
       return createLlmWikiRegistry(value);
     } catch {
@@ -501,6 +591,10 @@ function sourceKey(source: KnowledgeIntegrationSource): string {
 
 function normalizePath(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/u, "");
+}
+
+function openErrorsOf(registry: LlmWikiRegistry): LlmWikiError[] {
+  return registry.errorBook.filter((error) => error.status === "open");
 }
 
 function summarizeSourceHealth(sources: LlmWikiSourceHealth[]): DesktopWikiSourceHealthSummary {
