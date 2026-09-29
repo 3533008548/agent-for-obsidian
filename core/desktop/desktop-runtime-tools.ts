@@ -213,7 +213,7 @@ export function createDesktopRuntimeToolRegistry(
       deps.state.wikiDraft = draft;
       deps.state.writePreviews = previews;
       return {
-        summary: `已生成 LLM Wiki：${draft.pages.length} 个页面、${draft.sourceCount} 条来源；已生成写入预览。`,
+        summary: `已生成 LLM Wiki：${draft.pages.length} 个页面、${draft.sourceCount} 条来源，其中 ${draft.composedNodes} 个概念页由模型依据证据撰写；已生成写入预览。`,
         artifact: "write-preview"
       };
     },

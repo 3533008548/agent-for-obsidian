@@ -4095,7 +4095,7 @@ function compileLlmWikiTopic(session, registry, knowledgeSystemFolder, options =
   const topicFolder = getLlmWikiTopicId(session.topic);
   const topicRelativeFolder = `${LLM_WIKI_FOLDER}/${topicFolder}`;
   const topicIndexPath = `${wikiRootPath}/${topicFolder}/\u6982\u89C8.md`;
-  const conceptPages = createConceptPages(session, topicRelativeFolder, topicIndexPath, wikiRootPath);
+  const conceptPages = createConceptPages(session, topicRelativeFolder, topicIndexPath, wikiRootPath, options.nodeDrafts);
   const previousTopic = registry.topics.find((topic) => topic.id === topicFolder);
   const retainedConcepts = options.mode === "expand" ? retainExistingConceptPages(previousTopic, topicIndexPath, conceptPages) : [];
   const topicPage = createTopicPage(session, topicRelativeFolder, topicIndexPath, conceptPages, retainedConcepts);
@@ -4208,7 +4208,7 @@ function llmWikiFolderPath(knowledgeSystemFolder) {
 function getLlmWikiTopicId(topic) {
   return sanitizePathSegment(topic);
 }
-function createConceptPages(session, topicRelativeFolder, topicIndexPath, wikiRootPath) {
+function createConceptPages(session, topicRelativeFolder, topicIndexPath, wikiRootPath, nodeDrafts) {
   const sourceById = new Map(session.sources.map((source) => [source.id, source]));
   const pages = session.map.nodes.map((node) => {
     const relativePath = `${topicRelativeFolder}/\u6982\u5FF5/${node.id}-${sanitizePathSegment(node.title)}.md`;
@@ -4217,6 +4217,7 @@ function createConceptPages(session, topicRelativeFolder, topicIndexPath, wikiRo
     const related = session.map.nodes.filter((candidate) => candidate.id !== node.id && sharesSource(node, candidate)).slice(0, 3).map((candidate) => `${wikiRootPath}/${topicRelativeFolder.slice(LLM_WIKI_FOLDER.length + 1)}/\u6982\u5FF5/${candidate.id}-${sanitizePathSegment(candidate.title)}.md`);
     const links = [topicIndexPath, ...related];
     const sources = uniqueSources(nodeSources.map((source) => source.source));
+    const draft = nodeDrafts?.get(node.id);
     return {
       path,
       relativePath,
@@ -4233,7 +4234,10 @@ function createConceptPages(session, topicRelativeFolder, topicIndexPath, wikiRo
         "",
         "## \u6838\u5FC3\u8BF4\u660E",
         "",
-        node.summary,
+        // A composed draft brings its own conflict and gap sections; without
+        // one the page is the knowledge-map summary, which is an outline entry
+        // rather than written prose.
+        draft ? renderKnowledgeNodeContent(draft) : node.summary,
         "",
         "## \u5173\u8054\u6982\u5FF5",
         "",
@@ -4470,6 +4474,8 @@ function isErrorRecord(value) {
 // core/desktop/desktop-wiki-service.ts
 var MAX_WIKI_SOURCES = 80;
 var MAX_CHUNKS_PER_SOURCE_PATH = 2;
+var MAX_WIKI_NODE_DRAFTS = 12;
+var NODE_DRAFT_CONCURRENCY = 3;
 var DesktopWikiService = class {
   constructor(repository, index, policy, configuration) {
     this.repository = repository;
@@ -4507,33 +4513,12 @@ var DesktopWikiService = class {
     if (!this.configuration.deepSeekApiKey.trim()) {
       throw new Error("\u8BF7\u5148\u5728\u6A21\u578B\u914D\u7F6E\u4E2D\u586B\u5199 DEEPSEEK_API_KEY\u3002");
     }
-    const wikiPrefix = `${this.wikiFolder}/`;
-    const registry = await this.readRegistry();
-    const previousTopic = registry.topics.find((record) => record.id === getLlmWikiTopicId(normalizedTopic));
-    const sourceHealth = mode === "expand" && previousTopic ? await this.inspectTopicSources(previousTopic) : [];
-    const selection = this.collectSources(normalizedTopic, wikiPrefix, previousTopic, mode);
-    if (!selection.sources.length) {
-      throw new Error("\u672C\u5730\u6CA1\u6709\u547D\u4E2D\u53EF\u7528\u4E8E\u7F16\u8BD1 Wiki \u7684\u8D44\u6599\u3002");
-    }
-    const client = new DeepSeekClient({
-      apiKey: this.configuration.deepSeekApiKey,
-      model: this.configuration.deepSeekModel,
-      slowResponseMs: this.configuration.requestTimeoutMs,
-      postJson: postJsonWithFetch
-    });
-    const map = await client.createKnowledgeMap(normalizedTopic, selection.sources);
-    const session = {
-      id: `desktop-wiki-${Date.now()}`,
-      topic: normalizedTopic,
-      scopeLabel: `\u672C\u5730\u68C0\u7D22\uFF1A${normalizedTopic}`,
-      createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-      sources: selection.sources,
-      map
-    };
-    const compilation = compileLlmWikiTopic(session, registry, this.knowledgeSystemFolder, {
+    const prepared = await this.prepare(normalizedTopic, mode);
+    const compilation = compileLlmWikiTopic(prepared.session, prepared.registry, this.knowledgeSystemFolder, {
       mode,
-      coverageReport: selection.coverage,
-      sourceHealth
+      coverageReport: prepared.coverage,
+      sourceHealth: prepared.sourceHealth,
+      nodeDrafts: prepared.nodeDrafts
     });
     let updatedCount = 0;
     for (const page of compilation.pages) {
@@ -4553,11 +4538,13 @@ var DesktopWikiService = class {
     return {
       topic: normalizedTopic,
       pageCount: compilation.pages.length,
-      sourceCount: selection.sources.length,
+      sourceCount: prepared.sourceCount,
       updatedCount,
       paths: compilation.pages.map((page) => `${this.knowledgeSystemFolder}/${page.relativePath}`),
-      coverage: selection.coverage,
-      sourceHealth: summarizeSourceHealth(sourceHealth)
+      coverage: prepared.coverage,
+      sourceHealth: summarizeSourceHealth(prepared.sourceHealth),
+      composedNodes: prepared.nodeDrafts.size,
+      fallbackNodes: prepared.fallbackNodes
     };
   }
   /**
@@ -4574,11 +4561,39 @@ var DesktopWikiService = class {
     if (!this.configuration.deepSeekApiKey.trim()) {
       throw new Error("\u8BF7\u5148\u5728\u6A21\u578B\u914D\u7F6E\u4E2D\u586B\u5199 DEEPSEEK_API_KEY\u3002");
     }
+    const prepared = await this.prepare(normalizedTopic, mode);
+    const compilation = compileLlmWikiTopic(prepared.session, prepared.registry, this.knowledgeSystemFolder, {
+      mode,
+      coverageReport: prepared.coverage,
+      sourceHealth: prepared.sourceHealth,
+      nodeDrafts: prepared.nodeDrafts
+    });
+    return {
+      topic: normalizedTopic,
+      pages: compilation.pages.map((page) => ({
+        targetPath: `${this.knowledgeSystemFolder}/${page.relativePath}`,
+        content: page.content
+      })),
+      sourceCount: prepared.sourceCount,
+      coverage: prepared.coverage,
+      sourceHealth: summarizeSourceHealth(prepared.sourceHealth),
+      composedNodes: prepared.nodeDrafts.size,
+      fallbackNodes: prepared.fallbackNodes,
+      registry: compilation.nextRegistry
+    };
+  }
+  /**
+   * Everything a compilation needs before the pages can be laid out: the
+   * knowledge map plus a written body for each concept node.
+   *
+   * Shared by the writing path and the preview path so the two cannot drift.
+   */
+  async prepare(topic, mode) {
     const wikiPrefix = `${this.wikiFolder}/`;
     const registry = await this.readRegistry();
-    const previousTopic = registry.topics.find((record) => record.id === getLlmWikiTopicId(normalizedTopic));
+    const previousTopic = registry.topics.find((record) => record.id === getLlmWikiTopicId(topic));
     const sourceHealth = mode === "expand" && previousTopic ? await this.inspectTopicSources(previousTopic) : [];
-    const selection = this.collectSources(normalizedTopic, wikiPrefix, previousTopic, mode);
+    const selection = this.collectSources(topic, wikiPrefix, previousTopic, mode);
     if (!selection.sources.length) {
       throw new Error("\u672C\u5730\u6CA1\u6709\u547D\u4E2D\u53EF\u7528\u4E8E\u7F16\u8BD1 Wiki \u7684\u8D44\u6599\u3002");
     }
@@ -4588,30 +4603,27 @@ var DesktopWikiService = class {
       slowResponseMs: this.configuration.requestTimeoutMs,
       postJson: postJsonWithFetch
     });
-    const map = await client.createKnowledgeMap(normalizedTopic, selection.sources);
+    const map = await client.createKnowledgeMap(topic, selection.sources);
     const session = {
       id: `desktop-wiki-${Date.now()}`,
-      topic: normalizedTopic,
-      scopeLabel: `\u672C\u5730\u68C0\u7D22\uFF1A${normalizedTopic}`,
+      topic,
+      scopeLabel: `\u672C\u5730\u68C0\u7D22\uFF1A${topic}`,
       createdAt: (/* @__PURE__ */ new Date()).toISOString(),
       sources: selection.sources,
       map
     };
-    const compilation = compileLlmWikiTopic(session, registry, this.knowledgeSystemFolder, {
-      mode,
-      coverageReport: selection.coverage,
-      sourceHealth
-    });
+    const { drafts, fallbackNodes } = await composeWikiNodeDrafts(
+      (node, sources) => client.composeKnowledgeNode(topic, node, sources),
+      session
+    );
     return {
-      topic: normalizedTopic,
-      pages: compilation.pages.map((page) => ({
-        targetPath: `${this.knowledgeSystemFolder}/${page.relativePath}`,
-        content: page.content
-      })),
-      sourceCount: selection.sources.length,
+      registry,
+      session,
       coverage: selection.coverage,
-      sourceHealth: summarizeSourceHealth(sourceHealth),
-      registry: compilation.nextRegistry
+      sourceHealth,
+      sourceCount: selection.sources.length,
+      nodeDrafts: drafts,
+      fallbackNodes
     };
   }
   /** Persist the registry after a confirmed compilation. */
@@ -4797,6 +4809,32 @@ var DesktopWikiService = class {
     return health;
   }
 };
+async function composeWikiNodeDrafts(composer, session, limit = MAX_WIKI_NODE_DRAFTS) {
+  const sourceById = new Map(session.sources.map((source) => [source.id, source]));
+  const targets = session.map.nodes.slice(0, limit).flatMap((node) => {
+    const sources = node.sourceIds.map((id) => sourceById.get(id)).filter((source) => Boolean(source));
+    return sources.length ? [{ node, sources }] : [];
+  });
+  const drafts = /* @__PURE__ */ new Map();
+  const fallbackNodes = [];
+  for (let index = 0; index < targets.length; index += NODE_DRAFT_CONCURRENCY) {
+    const results = await Promise.all(targets.slice(index, index + NODE_DRAFT_CONCURRENCY).map(async (target) => {
+      try {
+        return { node: target.node, draft: await composer(target.node, target.sources) };
+      } catch {
+        return { node: target.node, draft: null };
+      }
+    }));
+    for (const result of results) {
+      if (result.draft) {
+        drafts.set(result.node.id, result.draft);
+      } else {
+        fallbackNodes.push(result.node.title);
+      }
+    }
+  }
+  return { drafts, fallbackNodes };
+}
 function toSourceRef2(pathOrUrl, locator, content) {
   return {
     type: "note",
@@ -5768,7 +5806,7 @@ function createDesktopRuntimeToolRegistry(deps) {
       deps.state.wikiDraft = draft;
       deps.state.writePreviews = previews;
       return {
-        summary: `\u5DF2\u751F\u6210 LLM Wiki\uFF1A${draft.pages.length} \u4E2A\u9875\u9762\u3001${draft.sourceCount} \u6761\u6765\u6E90\uFF1B\u5DF2\u751F\u6210\u5199\u5165\u9884\u89C8\u3002`,
+        summary: `\u5DF2\u751F\u6210 LLM Wiki\uFF1A${draft.pages.length} \u4E2A\u9875\u9762\u3001${draft.sourceCount} \u6761\u6765\u6E90\uFF0C\u5176\u4E2D ${draft.composedNodes} \u4E2A\u6982\u5FF5\u9875\u7531\u6A21\u578B\u4F9D\u636E\u8BC1\u636E\u64B0\u5199\uFF1B\u5DF2\u751F\u6210\u5199\u5165\u9884\u89C8\u3002`,
         artifact: "write-preview"
       };
     },
@@ -6712,7 +6750,10 @@ var DesktopKnowledgeWorkspace = class {
           return actionResponse(intent, "\u8BF7\u8BF4\u660E\u8981\u7F16\u8BD1\u7684 Wiki \u4E3B\u9898\uFF0C\u4F8B\u5982\u201C\u7F16\u8BD1 LangGraph LLM Wiki\u201D\u3002");
         }
         const result = await this.compileWiki(subject);
-        return actionResponse(intent, `\u5DF2\u7F16\u8BD1 LLM Wiki\u300C${result.topic}\u300D\uFF1A\u4F7F\u7528 ${result.sourceCount} \u6761\u672C\u5730\u8D44\u6599\uFF0C\u5199\u5165 ${result.pageCount} \u4E2A\u9875\u9762\u3002`);
+        return actionResponse(intent, [
+          `\u5DF2\u7F16\u8BD1 LLM Wiki\u300C${result.topic}\u300D\uFF1A\u4F7F\u7528 ${result.sourceCount} \u6761\u672C\u5730\u8D44\u6599\uFF0C\u5199\u5165 ${result.pageCount} \u4E2A\u9875\u9762\u3002`,
+          describeNodeDrafts(result)
+        ].join("\n"));
       }
       case "expand-wiki": {
         if (!subject) {
@@ -6722,7 +6763,8 @@ var DesktopKnowledgeWorkspace = class {
         return actionResponse(intent, [
           `\u5DF2\u8865\u5168 LLM Wiki\u300C${result.topic}\u300D\uFF1A\u4F7F\u7528 ${result.sourceCount} \u6761\u672C\u5730\u8D44\u6599\uFF0C\u5199\u5165 ${result.pageCount} \u4E2A\u9875\u9762\u3002`,
           `\u672C\u8F6E\u65B0\u589E\u8986\u76D6 ${result.coverage.added} \u6761\uFF0C\u53D8\u66F4/\u65B0\u7247\u6BB5 ${result.coverage.changed} \u6761\uFF0C\u590D\u7528\u4E0A\u4E0B\u6587 ${result.coverage.reused} \u6761\uFF1B\u4ECD\u6709 ${result.coverage.remainingCandidates} \u7BC7\u5019\u9009\u8D44\u6599\u5F85\u8986\u76D6\u3002`,
-          result.sourceHealth.missing || result.sourceHealth.changed || result.sourceHealth.unverified ? `\u5386\u53F2\u6765\u6E90\u68C0\u67E5\uFF1A\u5DF2\u53D8\u5316 ${result.sourceHealth.changed} \u4E2A\uFF0C\u5DF2\u5220\u9664 ${result.sourceHealth.missing} \u4E2A\uFF0C\u4E0D\u53EF\u6838\u9A8C ${result.sourceHealth.unverified} \u4E2A\uFF1B\u8FD9\u4E9B\u5185\u5BB9\u4ECD\u9700\u6838\u9A8C\u3002` : "\u5386\u53F2\u6765\u6E90\u68C0\u67E5\uFF1A\u5F53\u524D\u4F9D\u8D56\u6765\u6E90\u5747\u53EF\u672C\u5730\u590D\u6838\u3002"
+          result.sourceHealth.missing || result.sourceHealth.changed || result.sourceHealth.unverified ? `\u5386\u53F2\u6765\u6E90\u68C0\u67E5\uFF1A\u5DF2\u53D8\u5316 ${result.sourceHealth.changed} \u4E2A\uFF0C\u5DF2\u5220\u9664 ${result.sourceHealth.missing} \u4E2A\uFF0C\u4E0D\u53EF\u6838\u9A8C ${result.sourceHealth.unverified} \u4E2A\uFF1B\u8FD9\u4E9B\u5185\u5BB9\u4ECD\u9700\u6838\u9A8C\u3002` : "\u5386\u53F2\u6765\u6E90\u68C0\u67E5\uFF1A\u5F53\u524D\u4F9D\u8D56\u6765\u6E90\u5747\u53EF\u672C\u5730\u590D\u6838\u3002",
+          describeNodeDrafts(result)
         ].join("\n"));
       }
       case "inspect-wiki-sources": {
@@ -7268,6 +7310,14 @@ function actionResponse(intent, content, extra = {}) {
     sources: [],
     ...extra
   };
+}
+function describeNodeDrafts(result) {
+  if (!result.composedNodes && !result.fallbackNodes.length) {
+    return "";
+  }
+  const failed = result.fallbackNodes.length ? `${result.fallbackNodes.length} \u4E2A\u6982\u5FF5\u9875\u672A\u80FD\u64B0\u5199\u3001\u4ECD\u4E3A\u63D0\u7EB2\u6458\u8981\uFF08${result.fallbackNodes.join("\u3001")}\uFF09` : "";
+  const written = result.composedNodes ? `${result.composedNodes} \u4E2A\u6982\u5FF5\u9875\u7531\u6A21\u578B\u4F9D\u636E\u8BC1\u636E\u64B0\u5199` : "";
+  return [written, failed].filter(Boolean).join("\uFF1B") + (written || failed ? "\u3002" : "");
 }
 function formatIntentAction(intent) {
   const names = {

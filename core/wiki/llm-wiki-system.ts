@@ -1,6 +1,12 @@
 import { hashText } from "../domain/content-hash";
 import type { SourceRef } from "../domain/source-ref";
-import type { KnowledgeIntegrationSession, KnowledgeIntegrationSource, KnowledgeMapNode } from "../integration/knowledge-system";
+import { renderKnowledgeNodeContent } from "../integration/knowledge-system";
+import type {
+  KnowledgeIntegrationSession,
+  KnowledgeIntegrationSource,
+  KnowledgeMapNode,
+  KnowledgeNodeDraft
+} from "../integration/knowledge-system";
 
 export const LLM_WIKI_FOLDER = "LLM Wiki";
 const ERROR_BOOK_RELATIVE_PATH = `${LLM_WIKI_FOLDER}/_system/Error Book.md`;
@@ -100,6 +106,14 @@ export interface LlmWikiCompilationOptions {
   mode?: LlmWikiCompilationMode;
   coverageReport?: LlmWikiCoverageReport;
   sourceHealth?: LlmWikiSourceHealth[];
+  /**
+   * Model-written bodies for concept nodes, keyed by node id.
+   *
+   * Writing them costs one call per node, so the caller decides how many it is
+   * willing to pay for; nodes without a draft keep the knowledge-map summary
+   * and the page stays an outline entry rather than failing the compilation.
+   */
+  nodeDrafts?: ReadonlyMap<string, KnowledgeNodeDraft>;
 }
 
 export interface LlmWikiSearchResult {
@@ -125,7 +139,7 @@ export function compileLlmWikiTopic(
   const topicFolder = getLlmWikiTopicId(session.topic);
   const topicRelativeFolder = `${LLM_WIKI_FOLDER}/${topicFolder}`;
   const topicIndexPath = `${wikiRootPath}/${topicFolder}/概览.md`;
-  const conceptPages = createConceptPages(session, topicRelativeFolder, topicIndexPath, wikiRootPath);
+  const conceptPages = createConceptPages(session, topicRelativeFolder, topicIndexPath, wikiRootPath, options.nodeDrafts);
   const previousTopic = registry.topics.find((topic) => topic.id === topicFolder);
   const retainedConcepts = options.mode === "expand"
     ? retainExistingConceptPages(previousTopic, topicIndexPath, conceptPages)
@@ -317,7 +331,8 @@ function createConceptPages(
   session: KnowledgeIntegrationSession,
   topicRelativeFolder: string,
   topicIndexPath: string,
-  wikiRootPath: string
+  wikiRootPath: string,
+  nodeDrafts?: ReadonlyMap<string, KnowledgeNodeDraft>
 ): LlmWikiPageDraft[] {
   const sourceById = new Map(session.sources.map((source) => [source.id, source]));
   const pages = session.map.nodes.map((node) => {
@@ -332,6 +347,7 @@ function createConceptPages(
       .map((candidate) => `${wikiRootPath}/${topicRelativeFolder.slice(LLM_WIKI_FOLDER.length + 1)}/概念/${candidate.id}-${sanitizePathSegment(candidate.title)}.md`);
     const links = [topicIndexPath, ...related];
     const sources = uniqueSources(nodeSources.map((source) => source.source));
+    const draft = nodeDrafts?.get(node.id);
     return {
       path,
       relativePath,
@@ -348,7 +364,10 @@ function createConceptPages(
         "",
         "## 核心说明",
         "",
-        node.summary,
+        // A composed draft brings its own conflict and gap sections; without
+        // one the page is the knowledge-map summary, which is an outline entry
+        // rather than written prose.
+        draft ? renderKnowledgeNodeContent(draft) : node.summary,
         "",
         "## 关联概念",
         "",

@@ -330,7 +330,10 @@ class DesktopKnowledgeWorkspace {
           return actionResponse(intent, "请说明要编译的 Wiki 主题，例如“编译 LangGraph LLM Wiki”。");
         }
         const result = await this.compileWiki(subject);
-        return actionResponse(intent, `已编译 LLM Wiki「${result.topic}」：使用 ${result.sourceCount} 条本地资料，写入 ${result.pageCount} 个页面。`);
+        return actionResponse(intent, [
+          `已编译 LLM Wiki「${result.topic}」：使用 ${result.sourceCount} 条本地资料，写入 ${result.pageCount} 个页面。`,
+          describeNodeDrafts(result)
+        ].join("\n"));
       }
       case "expand-wiki": {
         if (!subject) {
@@ -342,7 +345,8 @@ class DesktopKnowledgeWorkspace {
           `本轮新增覆盖 ${result.coverage.added} 条，变更/新片段 ${result.coverage.changed} 条，复用上下文 ${result.coverage.reused} 条；仍有 ${result.coverage.remainingCandidates} 篇候选资料待覆盖。`,
           result.sourceHealth.missing || result.sourceHealth.changed || result.sourceHealth.unverified
             ? `历史来源检查：已变化 ${result.sourceHealth.changed} 个，已删除 ${result.sourceHealth.missing} 个，不可核验 ${result.sourceHealth.unverified} 个；这些内容仍需核验。`
-            : "历史来源检查：当前依赖来源均可本地复核。"
+            : "历史来源检查：当前依赖来源均可本地复核。",
+          describeNodeDrafts(result)
         ].join("\n"));
       }
       case "inspect-wiki-sources": {
@@ -408,6 +412,8 @@ class DesktopKnowledgeWorkspace {
     paths: string[];
     coverage: { added: number; changed: number; reused: number; remainingCandidates: number };
     sourceHealth: { active: number; changed: number; missing: number; unverified: number };
+    composedNodes: number;
+    fallbackNodes: string[];
   }> {
     if (!this.repository || !this.index) {
       throw new Error("请先选择或迁移本地知识库。 ");
@@ -1002,6 +1008,24 @@ function actionResponse(
     sources: [],
     ...extra
   };
+}
+
+/**
+ * How much of a Wiki was actually written by the model.
+ *
+ * Concept pages that fell back to their knowledge-map summary are still
+ * outline entries, and the user should be able to tell them apart from pages
+ * that were composed from the evidence.
+ */
+function describeNodeDrafts(result: { composedNodes: number; fallbackNodes: string[] }): string {
+  if (!result.composedNodes && !result.fallbackNodes.length) {
+    return "";
+  }
+  const failed = result.fallbackNodes.length
+    ? `${result.fallbackNodes.length} 个概念页未能撰写、仍为提纲摘要（${result.fallbackNodes.join("、")}）`
+    : "";
+  const written = result.composedNodes ? `${result.composedNodes} 个概念页由模型依据证据撰写` : "";
+  return [written, failed].filter(Boolean).join("；") + (written || failed ? "。" : "");
 }
 
 function formatIntentAction(intent: Exclude<ReturnType<typeof detectDesktopAgentIntent>["intent"], "answer">): string {

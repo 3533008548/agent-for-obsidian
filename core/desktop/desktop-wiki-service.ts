@@ -17,7 +17,12 @@ import {
   type LlmWikiSourceHealth,
   type LlmWikiTopicRecord
 } from "../wiki/llm-wiki-system";
-import type { KnowledgeIntegrationSession, KnowledgeIntegrationSource } from "../integration/knowledge-system";
+import type {
+  KnowledgeIntegrationSession,
+  KnowledgeIntegrationSource,
+  KnowledgeMapNode,
+  KnowledgeNodeDraft
+} from "../integration/knowledge-system";
 import { DeepSeekClient } from "../services/deepseek-client";
 import { postJsonWithFetch } from "../services/fetch-api-request";
 import { parseMarkdownIntoChunks } from "../indexing/markdown-parser";
@@ -40,6 +45,10 @@ export interface DesktopWikiResult {
   paths: string[];
   coverage: LlmWikiCoverageReport;
   sourceHealth: DesktopWikiSourceHealthSummary;
+  /** Concept pages written by the model rather than left as outline entries. */
+  composedNodes: number;
+  /** Concept pages that kept the knowledge-map summary because writing failed. */
+  fallbackNodes: string[];
 }
 
 export type DesktopWikiCompileMode = LlmWikiCompilationMode;
@@ -103,6 +112,8 @@ export interface DesktopWikiCompileDraft {
   sourceCount: number;
   coverage: LlmWikiCoverageReport;
   sourceHealth: DesktopWikiSourceHealthSummary;
+  composedNodes: number;
+  fallbackNodes: string[];
   registry: LlmWikiRegistry;
 }
 
@@ -113,8 +124,27 @@ interface WikiCandidate {
   kind: WikiCandidateKind;
 }
 
+interface WikiCompilationInput {
+  registry: LlmWikiRegistry;
+  session: KnowledgeIntegrationSession;
+  coverage: LlmWikiCoverageReport;
+  sourceHealth: LlmWikiSourceHealth[];
+  sourceCount: number;
+  nodeDrafts: Map<string, KnowledgeNodeDraft>;
+  fallbackNodes: string[];
+}
+
+export interface WikiNodeDraftsResult {
+  drafts: Map<string, KnowledgeNodeDraft>;
+  /** Node titles that kept the knowledge-map summary because writing failed. */
+  fallbackNodes: string[];
+}
+
 const MAX_WIKI_SOURCES = 80;
 const MAX_CHUNKS_PER_SOURCE_PATH = 2;
+/** Bodies are written one model call at a time, so the fan-out is capped. */
+const MAX_WIKI_NODE_DRAFTS = 12;
+const NODE_DRAFT_CONCURRENCY = 3;
 
 /** Builds and persists the deterministic LLM Wiki pages used by the plugin. */
 export class DesktopWikiService {
@@ -156,33 +186,12 @@ export class DesktopWikiService {
     if (!this.configuration.deepSeekApiKey.trim()) {
       throw new Error("请先在模型配置中填写 DEEPSEEK_API_KEY。");
     }
-    const wikiPrefix = `${this.wikiFolder}/`;
-    const registry = await this.readRegistry();
-    const previousTopic = registry.topics.find((record) => record.id === getLlmWikiTopicId(normalizedTopic));
-    const sourceHealth = mode === "expand" && previousTopic ? await this.inspectTopicSources(previousTopic) : [];
-    const selection = this.collectSources(normalizedTopic, wikiPrefix, previousTopic, mode);
-    if (!selection.sources.length) {
-      throw new Error("本地没有命中可用于编译 Wiki 的资料。");
-    }
-    const client = new DeepSeekClient({
-      apiKey: this.configuration.deepSeekApiKey,
-      model: this.configuration.deepSeekModel,
-      slowResponseMs: this.configuration.requestTimeoutMs,
-      postJson: postJsonWithFetch
-    });
-    const map = await client.createKnowledgeMap(normalizedTopic, selection.sources);
-    const session: KnowledgeIntegrationSession = {
-      id: `desktop-wiki-${Date.now()}`,
-      topic: normalizedTopic,
-      scopeLabel: `本地检索：${normalizedTopic}`,
-      createdAt: new Date().toISOString(),
-      sources: selection.sources,
-      map
-    };
-    const compilation = compileLlmWikiTopic(session, registry, this.knowledgeSystemFolder, {
+    const prepared = await this.prepare(normalizedTopic, mode);
+    const compilation = compileLlmWikiTopic(prepared.session, prepared.registry, this.knowledgeSystemFolder, {
       mode,
-      coverageReport: selection.coverage,
-      sourceHealth
+      coverageReport: prepared.coverage,
+      sourceHealth: prepared.sourceHealth,
+      nodeDrafts: prepared.nodeDrafts
     });
     let updatedCount = 0;
     for (const page of compilation.pages) {
@@ -202,11 +211,13 @@ export class DesktopWikiService {
     return {
       topic: normalizedTopic,
       pageCount: compilation.pages.length,
-      sourceCount: selection.sources.length,
+      sourceCount: prepared.sourceCount,
       updatedCount,
       paths: compilation.pages.map((page) => `${this.knowledgeSystemFolder}/${page.relativePath}`),
-      coverage: selection.coverage,
-      sourceHealth: summarizeSourceHealth(sourceHealth)
+      coverage: prepared.coverage,
+      sourceHealth: summarizeSourceHealth(prepared.sourceHealth),
+      composedNodes: prepared.nodeDrafts.size,
+      fallbackNodes: prepared.fallbackNodes
     };
   }
 
@@ -224,11 +235,40 @@ export class DesktopWikiService {
     if (!this.configuration.deepSeekApiKey.trim()) {
       throw new Error("请先在模型配置中填写 DEEPSEEK_API_KEY。");
     }
+    const prepared = await this.prepare(normalizedTopic, mode);
+    const compilation = compileLlmWikiTopic(prepared.session, prepared.registry, this.knowledgeSystemFolder, {
+      mode,
+      coverageReport: prepared.coverage,
+      sourceHealth: prepared.sourceHealth,
+      nodeDrafts: prepared.nodeDrafts
+    });
+    return {
+      topic: normalizedTopic,
+      pages: compilation.pages.map((page) => ({
+        targetPath: `${this.knowledgeSystemFolder}/${page.relativePath}`,
+        content: page.content
+      })),
+      sourceCount: prepared.sourceCount,
+      coverage: prepared.coverage,
+      sourceHealth: summarizeSourceHealth(prepared.sourceHealth),
+      composedNodes: prepared.nodeDrafts.size,
+      fallbackNodes: prepared.fallbackNodes,
+      registry: compilation.nextRegistry
+    };
+  }
+
+  /**
+   * Everything a compilation needs before the pages can be laid out: the
+   * knowledge map plus a written body for each concept node.
+   *
+   * Shared by the writing path and the preview path so the two cannot drift.
+   */
+  private async prepare(topic: string, mode: DesktopWikiCompileMode): Promise<WikiCompilationInput> {
     const wikiPrefix = `${this.wikiFolder}/`;
     const registry = await this.readRegistry();
-    const previousTopic = registry.topics.find((record) => record.id === getLlmWikiTopicId(normalizedTopic));
+    const previousTopic = registry.topics.find((record) => record.id === getLlmWikiTopicId(topic));
     const sourceHealth = mode === "expand" && previousTopic ? await this.inspectTopicSources(previousTopic) : [];
-    const selection = this.collectSources(normalizedTopic, wikiPrefix, previousTopic, mode);
+    const selection = this.collectSources(topic, wikiPrefix, previousTopic, mode);
     if (!selection.sources.length) {
       throw new Error("本地没有命中可用于编译 Wiki 的资料。");
     }
@@ -238,30 +278,27 @@ export class DesktopWikiService {
       slowResponseMs: this.configuration.requestTimeoutMs,
       postJson: postJsonWithFetch
     });
-    const map = await client.createKnowledgeMap(normalizedTopic, selection.sources);
+    const map = await client.createKnowledgeMap(topic, selection.sources);
     const session: KnowledgeIntegrationSession = {
       id: `desktop-wiki-${Date.now()}`,
-      topic: normalizedTopic,
-      scopeLabel: `本地检索：${normalizedTopic}`,
+      topic,
+      scopeLabel: `本地检索：${topic}`,
       createdAt: new Date().toISOString(),
       sources: selection.sources,
       map
     };
-    const compilation = compileLlmWikiTopic(session, registry, this.knowledgeSystemFolder, {
-      mode,
-      coverageReport: selection.coverage,
-      sourceHealth
-    });
+    const { drafts, fallbackNodes } = await composeWikiNodeDrafts(
+      (node, sources) => client.composeKnowledgeNode(topic, node, sources),
+      session
+    );
     return {
-      topic: normalizedTopic,
-      pages: compilation.pages.map((page) => ({
-        targetPath: `${this.knowledgeSystemFolder}/${page.relativePath}`,
-        content: page.content
-      })),
-      sourceCount: selection.sources.length,
+      registry,
+      session,
       coverage: selection.coverage,
-      sourceHealth: summarizeSourceHealth(sourceHealth),
-      registry: compilation.nextRegistry
+      sourceHealth,
+      sourceCount: selection.sources.length,
+      nodeDrafts: drafts,
+      fallbackNodes
     };
   }
 
@@ -472,6 +509,49 @@ export class DesktopWikiService {
     }
     return health;
   }
+}
+
+/**
+ * Writes a body for each concept node: a second model pass that reads the
+ * node's own evidence instead of reusing the knowledge-map summary.
+ *
+ * A node that fails keeps its summary rather than failing the compilation —
+ * by then the map and the earlier nodes are already paid for, and an outline
+ * entry is better than no page. Nothing here inspects the error, so a
+ * systematic failure (bad key, quota) still shows up as every node falling
+ * back, which the caller reports instead of hiding.
+ */
+export async function composeWikiNodeDrafts(
+  composer: (node: KnowledgeMapNode, sources: KnowledgeIntegrationSource[]) => Promise<KnowledgeNodeDraft>,
+  session: KnowledgeIntegrationSession,
+  limit = MAX_WIKI_NODE_DRAFTS
+): Promise<WikiNodeDraftsResult> {
+  const sourceById = new Map(session.sources.map((source) => [source.id, source]));
+  const targets = session.map.nodes.slice(0, limit).flatMap((node) => {
+    const sources = node.sourceIds
+      .map((id) => sourceById.get(id))
+      .filter((source): source is KnowledgeIntegrationSource => Boolean(source));
+    return sources.length ? [{ node, sources }] : [];
+  });
+  const drafts = new Map<string, KnowledgeNodeDraft>();
+  const fallbackNodes: string[] = [];
+  for (let index = 0; index < targets.length; index += NODE_DRAFT_CONCURRENCY) {
+    const results = await Promise.all(targets.slice(index, index + NODE_DRAFT_CONCURRENCY).map(async (target) => {
+      try {
+        return { node: target.node, draft: await composer(target.node, target.sources) };
+      } catch {
+        return { node: target.node, draft: null };
+      }
+    }));
+    for (const result of results) {
+      if (result.draft) {
+        drafts.set(result.node.id, result.draft);
+      } else {
+        fallbackNodes.push(result.node.title);
+      }
+    }
+  }
+  return { drafts, fallbackNodes };
 }
 
 function toSourceRef(pathOrUrl: string, locator: string, content: string): SourceRef {
