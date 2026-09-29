@@ -17,8 +17,8 @@ import {
 } from "../core/desktop/desktop-agent-service";
 import { StreamCancelledError } from "../core/services/fetch-api-request";
 import { DesktopSessionService } from "../core/desktop/desktop-session-service";
-import { DesktopWriteService } from "../core/desktop/desktop-write-service";
-import { DesktopWikiService } from "../core/desktop/desktop-wiki-service";
+import { DesktopWriteService, type DesktopWritePreview } from "../core/desktop/desktop-write-service";
+import { DesktopWikiService, type DesktopTopicSurveyDraft } from "../core/desktop/desktop-wiki-service";
 import { DesktopAttachmentService, type DesktopAttachmentState } from "../core/desktop/desktop-attachment-service";
 import { DesktopRelationService } from "../core/desktop/desktop-relation-service";
 import { DesktopAgentRuntime } from "../core/desktop/desktop-agent-runtime";
@@ -82,6 +82,8 @@ class DesktopKnowledgeWorkspace {
   private summary: MarkdownIndexSummary | null = null;
   private sessionService: DesktopSessionService | null = null;
   private writeService: DesktopWriteService | null = null;
+  /** A drafted library map waiting for the user to confirm the write. */
+  private surveyPreview: DesktopWritePreview | null = null;
   private wikiService: DesktopWikiService | null = null;
   private attachmentService: DesktopAttachmentService | null = null;
   private relationService: DesktopRelationService | null = null;
@@ -325,9 +327,28 @@ class DesktopKnowledgeWorkspace {
         const assistantStatePath = await this.sessionService.setCurrentFocus(subject);
         return actionResponse(intent, `已将当前重点设为：${subject}`, { assistantStatePath });
       }
+      case "survey-wiki": {
+        const result = await this.surveyTopics();
+        const parts = [
+          `已梳理 ${result.noteCount} 篇可外发笔记，划分为 ${result.topicNames.length} 个主题：${result.topicNames.join("、")}。`,
+          result.overview,
+          "地图已生成写入预览，确认后写入知识库；之后可以对某个主题说「编译 X LLM Wiki」。"
+        ];
+        if (result.skippedCount) {
+          parts.push(`注意：${result.skippedCount} 篇笔记被权限策略阻断，未参与划分。`);
+        }
+        if (result.failedBatches) {
+          parts.push(`注意：${result.failedBatches} 个批次划分失败，这些笔记可能没有被归入任何主题。`);
+        }
+        parts.push(`地图将写入：${result.relativePath}`);
+        return actionResponse(intent, parts.join("\n"));
+      }
       case "compile-wiki": {
         if (!subject) {
-          return actionResponse(intent, "请说明要编译的 Wiki 主题，例如“编译 LangGraph LLM Wiki”。");
+          return actionResponse(
+            intent,
+            "请说明要编译的 Wiki 主题，例如“编译 LangGraph LLM Wiki”；也可以说“梳理知识库”，让 Agent 先划分主题再挑一个编译。"
+          );
         }
         const result = await this.compileWiki(subject);
         return actionResponse(intent, [
@@ -423,6 +444,19 @@ class DesktopKnowledgeWorkspace {
     const result = await this.wikiService.compile(topic, mode);
     this.summary = await this.index.sync(this.policy);
     return result;
+  }
+
+  private async surveyTopics(): Promise<DesktopTopicSurveyDraft> {
+    if (!this.repository || !this.index || !this.policy || !this.writeService) {
+      throw new Error("请先选择或迁移本地知识库。");
+    }
+    const configuration = await readDesktopAgentConfiguration();
+    this.wikiService = new DesktopWikiService(this.repository, this.index, this.policy, configuration);
+    const draft = await this.wikiService.surveyTopics();
+    // Preview first, like every other write: the map is a note the user should
+    // read before it joins the vault.
+    this.surveyPreview = await this.writeService.previewPath(draft.relativePath, draft.content);
+    return draft;
   }
 
   private async inspectWikiSources(topic: string) {
@@ -756,8 +790,9 @@ class DesktopKnowledgeWorkspace {
   }
 
   async getWritePreviews(): Promise<WritePreviewView[]> {
-    const state = this.requireRuntime().getState();
-    return (state.writePreviews ?? []).map((preview) => ({
+    const state = this.agentRuntime?.getState();
+    const previews = [...(state?.writePreviews ?? []), ...(this.surveyPreview ? [this.surveyPreview] : [])];
+    return previews.map((preview) => ({
       targetPath: preview.targetPath,
       existedBefore: preview.existedBefore,
       beforeContent: preview.beforeContent,
@@ -767,9 +802,8 @@ class DesktopKnowledgeWorkspace {
 
   /** Write only what the user has previewed. */
   async applyWritePreviews(): Promise<string[]> {
-    const runtime = this.requireRuntime();
-    const state = runtime.getState();
-    const previews = state.writePreviews ?? [];
+    const state = this.agentRuntime?.getState();
+    const previews = [...(state?.writePreviews ?? []), ...(this.surveyPreview ? [this.surveyPreview] : [])];
     if (!previews.length || !this.writeService) {
       throw new Error("当前没有待确认的写入预览。");
     }
@@ -778,9 +812,13 @@ class DesktopKnowledgeWorkspace {
       const result = await this.writeService.apply(preview);
       written.push(result.targetPath);
     }
-    if (state.wikiDraft) {
-      await this.wikiService?.persistRegistry(state.wikiDraft.registry);
+    if (state) {
+      if (state.wikiDraft) {
+        await this.wikiService?.persistRegistry(state.wikiDraft.registry);
+      }
+      state.writePreviews = [];
     }
+    this.surveyPreview = null;
     this.summary = this.index ? await this.index.sync(this.policy) : this.summary;
     return written;
   }
@@ -1038,6 +1076,7 @@ function formatIntentAction(intent: Exclude<ReturnType<typeof detectDesktopAgent
     "open-assistant-state": "查看助手状态",
     "set-current-focus": "设置当前重点",
     "compile-wiki": "编译 LLM Wiki",
+    "survey-wiki": "梳理知识库主题",
     "expand-wiki": "补全 LLM Wiki",
     "inspect-wiki-sources": "检查 Wiki 来源",
     "process-images": "解析图片",

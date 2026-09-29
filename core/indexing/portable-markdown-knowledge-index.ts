@@ -244,7 +244,13 @@ export class PortableMarkdownKnowledgeIndex {
     });
   }
 
-  private getAllChunks(): MarkdownChunk[] {
+  /**
+   * Every indexed chunk, in no particular order.
+   *
+   * Public because whole-library passes (topic discovery, maintenance scans)
+   * need the corpus rather than a query's top hits.
+   */
+  getAllChunks(): MarkdownChunk[] {
     return [...this.entries.values()].flatMap((entry) => entry.chunks);
   }
 

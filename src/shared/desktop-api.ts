@@ -58,6 +58,7 @@ export type DesktopAgentIntent =
   | "open-assistant-state"
   | "set-current-focus"
   | "compile-wiki"
+  | "survey-wiki"
   | "expand-wiki"
   | "inspect-wiki-sources"
   | "process-images"

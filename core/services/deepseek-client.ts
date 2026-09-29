@@ -18,6 +18,15 @@ import {
   type KnowledgeMapNode,
   type KnowledgeNodeDraft
 } from "../integration/knowledge-system";
+import type { NoteDigest } from "../indexing/note-survey";
+import {
+  buildClusterMessages,
+  buildMergeMessages,
+  parseTopicClusters,
+  parseTopicSurveyPlan,
+  type TopicCluster,
+  type TopicSurveyPlan
+} from "../wiki/topic-discovery";
 import {
   buildNoteRelationMessages,
   parseNoteRelationPlan,
@@ -295,6 +304,40 @@ export class DeepSeekClient {
       throw new Error("DeepSeek 没有返回知识节点草稿。 ");
     }
     return parseKnowledgeNodeDraft(content, new Set(sources.map((source) => source.id)));
+  }
+
+  /**
+   * Clusters one batch of notes into candidate topics.
+   *
+   * A whole library does not fit in a single request, so discovery runs in
+   * batches and the results are merged by {@link mergeNoteTopics}.
+   */
+  async discoverNoteTopics(digests: readonly NoteDigest[]): Promise<TopicCluster[]> {
+    if (!digests.length) {
+      throw new Error("没有可用于划分主题的笔记。");
+    }
+    const completion = await this.complete(buildClusterMessages(digests), true);
+    const content = completion.content;
+    if (!content) {
+      throw new Error("DeepSeek 没有返回主题分组。");
+    }
+    return parseTopicClusters(content, new Set(digests.map((digest) => digest.path)));
+  }
+
+  /**
+   * Merges per-batch clusters into library-wide topics. Only here can the same
+   * theme appearing in two batches be recognised as one topic.
+   */
+  async mergeNoteTopics(clusters: readonly TopicCluster[]): Promise<TopicSurveyPlan> {
+    if (!clusters.length) {
+      throw new Error("没有可用于合并的主题候选。");
+    }
+    const completion = await this.complete(buildMergeMessages(clusters), true);
+    const content = completion.content;
+    if (!content) {
+      throw new Error("DeepSeek 没有返回知识库主题地图。");
+    }
+    return parseTopicSurveyPlan(content, new Set(clusters.flatMap((cluster) => cluster.paths)));
   }
 
   async proposeNoteRelations(sources: KnowledgeIntegrationSource[]): Promise<NoteRelationPlan> {

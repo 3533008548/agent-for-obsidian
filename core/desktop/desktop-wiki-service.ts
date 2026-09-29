@@ -25,6 +25,8 @@ import type {
 } from "../integration/knowledge-system";
 import { DeepSeekClient } from "../services/deepseek-client";
 import { postJsonWithFetch } from "../services/fetch-api-request";
+import { batchNoteDigests, buildNoteDigests } from "../indexing/note-survey";
+import { renderTopicMapMarkdown, type TopicCluster } from "../wiki/topic-discovery";
 import { parseMarkdownIntoChunks } from "../indexing/markdown-parser";
 import type { PortableMarkdownKnowledgeIndex } from "../indexing/portable-markdown-knowledge-index";
 import type { PolicyEngine } from "../policy/policy-engine";
@@ -92,6 +94,24 @@ export interface DesktopWikiHealthReview {
   checkedAt: string;
   topics: DesktopWikiTopicHealth[];
   openErrors: LlmWikiError[];
+}
+
+/**
+ * A drafted library map, not yet written.
+ *
+ * `skippedCount` and `failedBatches` exist because a survey that silently
+ * covered only part of the library would look complete while not being one.
+ */
+export interface DesktopTopicSurveyDraft {
+  relativePath: string;
+  content: string;
+  topicNames: string[];
+  overview: string;
+  noteCount: number;
+  /** Notes the send policy refused to let out. */
+  skippedCount: number;
+  /** Batches whose clustering call failed. */
+  failedBatches: number;
 }
 
 export interface DesktopWikiPageContent {
@@ -364,6 +384,61 @@ export class DesktopWikiService {
       await this.persistRegistry(next);
     }
     return { checkedAt, topics, openErrors: openErrorsOf(next) };
+  }
+
+  /**
+   * Groups the whole library into topics and drafts a map note.
+   *
+   * Returns a draft rather than writing: the map is a normal note the user
+   * should be able to read before it lands in the vault.
+   */
+  async surveyTopics(): Promise<DesktopTopicSurveyDraft> {
+    if (!this.configuration.deepSeekApiKey.trim()) {
+      throw new Error("请先在模型配置中填写 DEEPSEEK_API_KEY。");
+    }
+    const digests = buildNoteDigests(this.index.getAllChunks());
+    // Whole-library enumeration means every title is about to leave the device,
+    // so the send policy has to be applied here — not only on the write side.
+    const permitted = digests.filter((digest) =>
+      this.policy.decide({ action: "sendToGlm", targetPath: digest.path }).allowed
+    );
+    if (permitted.length < 2) {
+      throw new Error("可外发的笔记不足两条，无法划分主题（检查权限策略是否阻断了整个知识库）。");
+    }
+
+    const client = new DeepSeekClient({
+      apiKey: this.configuration.deepSeekApiKey,
+      model: this.configuration.deepSeekModel,
+      slowResponseMs: this.configuration.requestTimeoutMs,
+      postJson: postJsonWithFetch
+    });
+
+    let failedBatches = 0;
+    const clusters: TopicCluster[] = [];
+    for (const batch of batchNoteDigests(permitted)) {
+      try {
+        clusters.push(...(await client.discoverNoteTopics(batch)));
+      } catch (error) {
+        // One bad batch costs a slice of the library's topics, not the whole
+        // survey — the other batches' calls are already paid for.
+        failedBatches += 1;
+        console.error("[wiki-survey]", error);
+      }
+    }
+    if (!clusters.length) {
+      throw new Error("模型没有返回任何可用的主题分组。");
+    }
+
+    const plan = await client.mergeNoteTopics(clusters);
+    return {
+      relativePath: `${this.wikiFolder}/知识库地图.md`,
+      content: renderTopicMapMarkdown(plan, new Date().toISOString()),
+      topicNames: plan.topics.map((topic) => topic.name),
+      overview: plan.overview,
+      noteCount: permitted.length,
+      skippedCount: digests.length - permitted.length,
+      failedBatches
+    };
   }
 
   private collectSources(

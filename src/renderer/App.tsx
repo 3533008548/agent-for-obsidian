@@ -329,6 +329,9 @@ export function App() {
         setWorkspace(await api.getWorkspace());
         await refreshNotes();
         void refreshWikiHealth();
+        // Operational intents can stage a write (the library map does); only the
+        // planning flow used to look for previews, so they would never show up.
+        setWritePreviews(await api.getWritePreviews());
       }
       if (answer.profilePath) {
         await previewSource(answer.profilePath);

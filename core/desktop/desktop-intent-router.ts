@@ -8,6 +8,7 @@ export type DesktopAgentIntent =
   | "open-assistant-state"
   | "set-current-focus"
   | "compile-wiki"
+  | "survey-wiki"
   | "expand-wiki"
   | "inspect-wiki-sources"
   | "process-images"
@@ -73,6 +74,9 @@ export function detectDesktopAgentIntent(request: DesktopAgentIntentRequest): De
   }
   if (/(?:联网)?(?:核验|校验|比对|查漏补缺).{0,16}(?:llm\s*wiki|知识百科|笔记百科|wiki)|(?:llm\s*wiki|知识百科|笔记百科|wiki).{0,16}(?:联网)?(?:核验|校验|比对|查漏补缺)/iu.test(question)) {
     return { intent: "verify-wiki", subject: extractSubject(question, /(?:llm\s*wiki|知识百科|笔记百科|wiki)/iu) };
+  }
+  if (/(?:梳理|整理|盘点|划分|归纳|绘制|生成).{0,10}(?:知识库|笔记库|全部笔记|知识地图)|(?:知识库|笔记库).{0,8}(?:地图|主题)/u.test(question)) {
+    return { intent: "survey-wiki" };
   }
   if (/(?:解析|识别|处理).{0,8}(?:图片|图像)|(?:图片|图像).{0,8}(?:解析|识别|处理)/u.test(question)) {
     return { intent: "process-images" };
