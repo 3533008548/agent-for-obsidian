@@ -1,5 +1,7 @@
 import { hashText } from "../domain/content-hash";
+import { humanizeLocator } from "../domain/source-ref";
 import type { SourceRef } from "../domain/source-ref";
+import { tokenizeForSearch } from "../indexing/bm25";
 import { renderKnowledgeNodeContent } from "../integration/knowledge-system";
 import type {
   KnowledgeIntegrationSession,
@@ -36,13 +38,29 @@ export interface LlmWikiPageRecord {
   sourcePaths: string[];
 }
 
+/**
+ * A source note as the registry remembers it.
+ *
+ * `contentHash` alone cannot answer "what changed" — a typo and a rewrite both
+ * produce an unrelated value, so every small correction would read as a full
+ * replacement. `blockHashes` keeps the per-block values that make the difference
+ * a position instead of a guess. It is optional because registries written
+ * before the split carry only the single hash; those degrade to "assume
+ * changed" rather than pretending to know.
+ */
+export interface LlmWikiSourceRecord {
+  pathOrUrl: string;
+  contentHash: string;
+  blockHashes?: string[];
+}
+
 export interface LlmWikiTopicRecord {
   id: string;
   topic: string;
   indexPath: string;
   status: LlmWikiTopicStatus;
   updatedAt: string;
-  sourceHashes: Array<Pick<SourceRef, "pathOrUrl" | "contentHash">>;
+  sourceHashes: LlmWikiSourceRecord[];
   coverage?: LlmWikiCoverage;
   sourceHealth?: LlmWikiSourceHealth[];
   pages: LlmWikiPageRecord[];
@@ -114,6 +132,14 @@ export interface LlmWikiCompilationOptions {
    * and the page stays an outline entry rather than failing the compilation.
    */
   nodeDrafts?: ReadonlyMap<string, KnowledgeNodeDraft>;
+  /**
+   * Overrides the folder id derived from the topic name.
+   *
+   * The topic table gives every theme one stable id, so "RAG" and "RAG 检索"
+   * resolve to the same folder instead of opening two. Without an override the
+   * id comes from the wording the user happened to type.
+   */
+  topicId?: string;
 }
 
 export interface LlmWikiSearchResult {
@@ -136,7 +162,7 @@ export function compileLlmWikiTopic(
   options: LlmWikiCompilationOptions = {}
 ): LlmWikiCompilation {
   const wikiRootPath = `${normalizePath(knowledgeSystemFolder)}/${LLM_WIKI_FOLDER}`;
-  const topicFolder = getLlmWikiTopicId(session.topic);
+  const topicFolder = options.topicId?.trim() || getLlmWikiTopicId(session.topic);
   const topicRelativeFolder = `${LLM_WIKI_FOLDER}/${topicFolder}`;
   const topicIndexPath = `${wikiRootPath}/${topicFolder}/概览.md`;
   const conceptPages = createConceptPages(session, topicRelativeFolder, topicIndexPath, wikiRootPath, options.nodeDrafts);
@@ -184,6 +210,127 @@ export function compileLlmWikiTopic(
     pages,
     nextRegistry: { version: 1, topics, errorBook }
   };
+}
+
+/**
+ * Keeps concept page paths stable across compiles.
+ *
+ * A page path is `概念/${node.id}-${title}.md`, and both parts come from a
+ * freshly generated map: the model re-derives titles from the sources on every
+ * run, and ids are positional. The same concept therefore landed on a new path
+ * each expansion while retainExistingConceptPages kept the old pages — one
+ * recompile, one set of near-duplicate pages. Matching nodes back to the
+ * previous pages by title and re-adopting their ids makes an expansion
+ * overwrite in place; genuinely new concepts still get fresh ids.
+ */
+export function stabilizeWikiNodeIds(
+  nodes: KnowledgeMapNode[],
+  previousTopic: LlmWikiTopicRecord | undefined
+): KnowledgeMapNode[] {
+  if (!previousTopic?.pages.length || !nodes.length) {
+    return nodes;
+  }
+  const idByTitle = new Map<string, string>();
+  for (const page of previousTopic.pages) {
+    const match = page.path.match(/\/概念\/([^/]+)-([^/]+)\.md$/u);
+    if (!match) {
+      continue;
+    }
+    const key = normalizeConceptTitle(match[2]!);
+    if (key && !idByTitle.has(key)) {
+      idByTitle.set(key, match[1]!);
+    }
+  }
+  if (!idByTitle.size) {
+    return nodes;
+  }
+  const claimed = new Set<string>();
+  return nodes.map((node) => {
+    const existingId = idByTitle.get(normalizeConceptTitle(node.title));
+    if (!existingId || claimed.has(existingId)) {
+      return node;
+    }
+    claimed.add(existingId);
+    return { ...node, id: existingId };
+  });
+}
+
+function normalizeConceptTitle(title: string): string {
+  return title.normalize("NFKC").toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
+export interface WikiPageOverlapPair {
+  a: string;
+  b: string;
+  aTitle: string;
+  bTitle: string;
+  topic: string;
+  score: number;
+  signals: string[];
+}
+
+/** Read-only: repeated expansion compiles leave near-duplicate pages behind. */
+export function findOverlappingWikiPages(registry: LlmWikiRegistry, limit = 12): WikiPageOverlapPair[] {
+  const pages = registry.topics.flatMap((topic) => topic.pages
+    .filter((page) => page.path.includes("/概念/"))
+    .map((page) => ({
+      path: page.path,
+      title: page.title,
+      topic: topic.topic,
+      text: new Set(tokenizeForSearch(`${page.title} ${page.summary}`).slice(0, 200)),
+      titleTokens: new Set(tokenizeForSearch(page.title))
+    })));
+
+  const pairs: WikiPageOverlapPair[] = [];
+  for (let i = 0; i < pages.length; i += 1) {
+    for (let j = i + 1; j < pages.length; j += 1) {
+      const left = pages[i]!;
+      const right = pages[j]!;
+      const signals: string[] = [];
+      let score = 0;
+
+      let shared = 0;
+      for (const token of left.text) {
+        if (right.text.has(token)) {
+          shared += 1;
+        }
+      }
+      const smaller = Math.min(left.text.size, right.text.size);
+      const containment = smaller ? shared / smaller : 0;
+      if (shared >= 4 && containment >= 0.6) {
+        score = containment;
+        signals.push(`标题与摘要重合 ${Math.round(containment * 100)}%`);
+      }
+
+      let titleShared = 0;
+      for (const token of left.titleTokens) {
+        if (right.titleTokens.has(token)) {
+          titleShared += 1;
+        }
+      }
+      const titleUnion = left.titleTokens.size + right.titleTokens.size - titleShared;
+      const titleOverlap = titleUnion ? titleShared / titleUnion : 0;
+      if (titleShared >= 2 && titleOverlap >= 0.7) {
+        score = Math.max(score, titleOverlap);
+        signals.push("标题近同");
+      }
+
+      if (signals.length) {
+        pairs.push({
+          a: left.path,
+          b: right.path,
+          aTitle: left.title,
+          bTitle: right.title,
+          topic: left.topic === right.topic ? left.topic : `${left.topic} / ${right.topic}`,
+          score,
+          signals
+        });
+      }
+    }
+  }
+  return pairs
+    .sort((left, right) => right.score - left.score || left.a.localeCompare(right.a) || left.b.localeCompare(right.b))
+    .slice(0, limit);
 }
 
 export function searchLlmWiki(registry: LlmWikiRegistry, query: string, limit = 4): LlmWikiSearchResult[] {
@@ -358,7 +505,6 @@ function createConceptPages(
       sourcePaths: sources.map((source) => source.pathOrUrl),
       sources,
       content: [
-        renderPageMetadata("concept", session.topic, links, sources, session.createdAt),
         `> [!info] 概念页 · ${session.topic}`,
         `> 返回主题：[[${topicIndexPath}|${session.topic}]]`,
         "",
@@ -376,7 +522,10 @@ function createConceptPages(
         "## 原始证据",
         "",
         ...renderSources(nodeSources),
-        ""
+        "",
+        // Machine state goes last, not right under the title: nobody opens a
+        // page to read a JSON ledger, and several readers show it verbatim.
+        renderPageMetadata("concept", session.topic, links, sources, session.createdAt)
       ].join("\n")
     };
   });
@@ -403,7 +552,6 @@ function createTopicPage(
     sourcePaths: sources.map((source) => source.pathOrUrl),
     sources,
     content: [
-      renderPageMetadata("topic", session.topic, links, sources, session.createdAt),
       `> [!abstract] ${session.topic}`,
       `> 由 ${session.sources.length} 条原始资料编译；细节请回查来源。`,
       "",
@@ -426,7 +574,8 @@ function createTopicPage(
       "## 原始资料",
       "",
       ...renderSources(session.sources),
-      ""
+      "",
+      renderPageMetadata("topic", session.topic, links, sources, session.createdAt)
     ].join("\n")
   };
 }
@@ -456,7 +605,6 @@ function createGlobalIndexPage(topics: LlmWikiTopicRecord[], wikiRootPath: strin
     sourcePaths: sources.map((source) => source.pathOrUrl),
     sources: uniqueSources(sources),
     content: [
-      renderPageMetadata("global-index", "LLM Wiki", links, sources, new Date().toISOString()),
       "> [!info] LLM Wiki 入口",
       "> 主题页由原始资料增量编译；标记为“需更新”的主题有来源变化。",
       "",
@@ -465,9 +613,9 @@ function createGlobalIndexPage(topics: LlmWikiTopicRecord[], wikiRootPath: strin
       ...(topics.length
         ? topics.map((topic) => `- [[${topic.indexPath}|${topic.topic}]]${topic.status === "stale" ? " · 需更新" : ""}`)
         : ["- 尚未编译主题。"]),
-      "",
       `- [[${wikiRootPath}/_system/Error Book|Error Book]]`,
-      ""
+      "",
+      renderPageMetadata("global-index", "LLM Wiki", links, sources, new Date().toISOString())
     ].join("\n")
   };
 }
@@ -485,7 +633,6 @@ function createErrorBookPage(errors: LlmWikiError[], wikiRootPath: string, sourc
     sourcePaths: sources.map((source) => source.pathOrUrl),
     sources: uniqueSources(sources),
     content: [
-      renderPageMetadata("error-book", "LLM Wiki", [], sources, new Date().toISOString()),
       "> [!info] Error Book",
       "> 记录可复用的 Wiki 结构与来源修复规则。",
       "",
@@ -494,7 +641,8 @@ function createErrorBookPage(errors: LlmWikiError[], wikiRootPath: string, sourc
       ...(openErrors.length
         ? openErrors.map((error) => `- **${error.type}** · [[${error.path}]]：${error.detail}\n  - 规则：${error.rule}`)
         : ["- 当前没有未关闭的问题。"]),
-      ""
+      "",
+      renderPageMetadata("error-book", "LLM Wiki", [], sources, new Date().toISOString())
     ].join("\n")
   };
 }
@@ -555,7 +703,7 @@ function renderPageMetadata(kind: string, topic: string, links: string[], source
 }
 
 function renderSources(sources: KnowledgeIntegrationSource[]): string[] {
-  return sources.map((source) => `- [[${source.source.pathOrUrl}|${source.title}]]${source.source.locator ? ` · ${source.source.locator}` : ""}`);
+  return sources.map((source) => `- [[${source.source.pathOrUrl}|${source.title}]]${source.source.locator ? ` · ${humanizeLocator(source.source.locator)}` : ""}`);
 }
 
 function sharesSource(left: KnowledgeMapNode, right: KnowledgeMapNode): boolean {
@@ -587,22 +735,30 @@ function hasSourceHealthIssue(sourceHealth: LlmWikiSourceHealth[] | undefined): 
   return Boolean(sourceHealth?.some((source) => source.status !== "active"));
 }
 
+/**
+ * Merge source records across compiles, keeping the newest hash per path.
+ *
+ * Keyed by path alone. Keying on path *and* hash let the same note appear twice
+ * — once per compile, each with the hash it had then — which is how a recompile
+ * left a second set of pages behind describing the same material: the registry
+ * counted two sources where there was one note, and nothing in the data said they
+ * were the same note.
+ */
 function mergeSourceHashes(
-  ...groups: Array<Array<Pick<SourceRef, "pathOrUrl" | "contentHash">>>
-): Array<Pick<SourceRef, "pathOrUrl" | "contentHash">> {
-  const seen = new Set<string>();
-  const merged: Array<Pick<SourceRef, "pathOrUrl" | "contentHash">> = [];
+  ...groups: Array<Array<LlmWikiSourceRecord>>
+): LlmWikiSourceRecord[] {
+  const byPath = new Map<string, LlmWikiSourceRecord>();
   for (const group of groups) {
     for (const source of group) {
-      const key = `${normalizePath(source.pathOrUrl)}:${source.contentHash}`;
-      if (seen.has(key)) {
+      const key = normalizePath(source.pathOrUrl);
+      if (!key) {
         continue;
       }
-      seen.add(key);
-      merged.push({ pathOrUrl: source.pathOrUrl, contentHash: source.contentHash });
+      // Later groups are the newer compile, so they win.
+      byPath.set(key, { ...source, pathOrUrl: key });
     }
   }
-  return merged;
+  return [...byPath.values()];
 }
 
 function scorePage(page: LlmWikiPageRecord, query: string, terms: string[]): number {
@@ -653,4 +809,157 @@ function isErrorRecord(value: unknown): value is LlmWikiError {
     typeof (value as LlmWikiError).id === "string" &&
     typeof (value as LlmWikiError).type === "string" &&
     typeof (value as LlmWikiError).status === "string");
+}
+
+export interface WikiMissingSourcePatch {
+  content: string;
+  removedPaths: string[];
+}
+
+/**
+ * Patches one compiled Wiki page whose source notes were deleted.
+ *
+ * Deletion breaks the evidence chain, not the conclusions, so the body stays
+ * untouched: the dead entries leave the metadata block and the evidence list,
+ * a warning callout records what was lost, and 待补充 gains a re-evidence
+ * item. Deliberately no model call — the source is gone, nothing can be
+ * retrieved for it; the fix is bookkeeping, not another compile round.
+ * Returns the input untouched when the page does not cite a missing path.
+ */
+export function patchWikiPageForMissingSources(
+  content: string,
+  missingPaths: readonly string[],
+  observedAt = new Date().toISOString()
+): WikiMissingSourcePatch {
+  const missing = new Set(missingPaths.map(normalizePath));
+  if (!missing.size) {
+    return { content, removedPaths: [] };
+  }
+  const removed = new Set<string>();
+  let lines = content.split("\n");
+
+  const metadataStart = lines.findIndex((line) => line.includes("knowledge-loop-agent:llm-wiki"));
+  if (metadataStart >= 0) {
+    const metadataEnd = lines.findIndex((line, index) => index > metadataStart && line.trim() === "-->");
+    if (metadataEnd > metadataStart) {
+      try {
+        const parsed = JSON.parse(lines.slice(metadataStart + 1, metadataEnd).join("\n")) as {
+          sources?: Array<{ path?: string; hash?: string }>;
+          updatedAt?: string;
+        };
+        const sources = Array.isArray(parsed.sources) ? parsed.sources : [];
+        const kept = sources.filter((source) => {
+          const dead = typeof source.path === "string" && missing.has(normalizePath(source.path));
+          if (dead) {
+            removed.add(normalizePath(source.path!));
+          }
+          return !dead;
+        });
+        if (kept.length < sources.length) {
+          parsed.sources = kept;
+          parsed.updatedAt = observedAt;
+          lines = [
+            ...lines.slice(0, metadataStart),
+            `<!-- knowledge-loop-agent:llm-wiki`,
+            JSON.stringify(parsed),
+            `-->`,
+            ...lines.slice(metadataEnd + 1)
+          ];
+        }
+      } catch {
+        // 元数据块结构损坏时不改写它；下面的证据列表与标注仍然生效。
+      }
+    }
+  }
+
+  const evidenceIndex = lines.findIndex((line) => line.trim() === "## 原始证据");
+  if (evidenceIndex >= 0) {
+    let evidenceEnd = lines.length;
+    for (let index = evidenceIndex + 1; index < lines.length; index += 1) {
+      if (/^## /u.test(lines[index]!)) {
+        evidenceEnd = index;
+        break;
+      }
+    }
+    lines = lines.filter((line, index) => {
+      const cited = index > evidenceIndex && index < evidenceEnd &&
+        [...missing].some((path) => line.includes(`[[${path}|`) || line.includes(`[[${path}]]`));
+      if (cited) {
+        for (const path of missing) {
+          if (line.includes(`[[${path}|`) || line.includes(`[[${path}]]`)) {
+            removed.add(path);
+          }
+        }
+      }
+      return !cited;
+    });
+  }
+
+  if (!removed.size) {
+    return { content, removedPaths: [] };
+  }
+
+  const removedList = [...removed].join("、");
+  const day = observedAt.slice(0, 10);
+  const callout = [
+    `> [!warning] 证据失效`,
+    `> 原始来源已删除：${removedList}（${day} 校对）。相关结论暂无本地证据支持，待重新取证后移除本提示。`
+  ];
+  const infoIndex = lines.findIndex((line) => line.startsWith("> [!info]"));
+  if (infoIndex >= 0) {
+    let insertAt = infoIndex;
+    while (insertAt + 1 < lines.length && lines[insertAt + 1]!.startsWith(">")) {
+      insertAt += 1;
+    }
+    lines.splice(insertAt + 1, 0, "", ...callout);
+  } else {
+    const closeIndex = lines.findIndex((line) => line.trim() === "-->");
+    lines.splice(closeIndex >= 0 ? closeIndex + 1 : 0, 0, "", ...callout);
+  }
+
+  const gapIndex = lines.findIndex((line) => line.trim() === "## 待补充");
+  if (gapIndex >= 0) {
+    let insertAt = gapIndex + 1;
+    while (insertAt < lines.length && !lines[insertAt]!.trim()) {
+      insertAt += 1;
+    }
+    lines.splice(insertAt, 0, `- 来源 ${removedList} 已删除，本页对应结论需要重新取证。`);
+  }
+
+  return { content: lines.join("\n"), removedPaths: [...removed] };
+}
+
+/**
+ * Drops deleted sources from a topic's records once the affected pages have
+ * been patched: health stops reporting them, the topic returns to fresh (or
+ * stays stale for its remaining changed sources), and the matching Error Book
+ * entry closes on the next sync. Restoring the note later makes it look "new"
+ * again to the next incremental compile, which is the correct outcome.
+ */
+export function pruneMissingWikiSources(
+  registry: LlmWikiRegistry,
+  topicId: string,
+  missingPaths: readonly string[]
+): LlmWikiRegistry {
+  const missing = new Set(missingPaths.map(normalizePath));
+  if (!missing.size) {
+    return registry;
+  }
+  const topics = registry.topics.map((topic) => {
+    if (topic.id !== topicId) {
+      return topic;
+    }
+    const sourceHealth = (topic.sourceHealth ?? []).filter((health) => !missing.has(normalizePath(health.pathOrUrl)));
+    return {
+      ...topic,
+      sourceHashes: topic.sourceHashes.filter((source) => !missing.has(normalizePath(source.pathOrUrl))),
+      pages: topic.pages.map((page) => ({
+        ...page,
+        sourcePaths: page.sourcePaths.filter((path) => !missing.has(normalizePath(path)))
+      })),
+      sourceHealth,
+      status: hasSourceHealthIssue(sourceHealth) ? "stale" as const : "fresh" as const
+    };
+  });
+  return syncWikiSourceErrors({ ...registry, topics });
 }

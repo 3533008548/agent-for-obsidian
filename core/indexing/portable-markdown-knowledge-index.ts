@@ -34,10 +34,10 @@ export interface PortableMarkdownKnowledgeIndexOptions {
 }
 
 /**
- * Obsidian-independent Markdown index.
+ * Filesystem-backed Markdown index.
  *
- * The index intentionally retains the existing policy check at the storage
- * boundary, so moving the UI does not broaden which notes can be indexed.
+ * Reads whichever directory the user pointed at, with the policy check kept at
+ * the storage boundary so a new caller cannot widen which notes are indexed.
  *
  * `sync()` is the normal entry point: it diffs file fingerprints against the
  * last snapshot and only re-reads what actually changed, which also keeps the

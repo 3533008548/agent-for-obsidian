@@ -164,6 +164,27 @@ h1 {
   white-space: nowrap;
 }
 
+/**
+ * Group label inside the settings menu.
+ *
+ * The menu grew past a couple of items, so it needed a way to say that
+ * "重建索引" is not the same kind of action as "模型配置". Uppercase-ish small
+ * caps, quiet colour, and a hairline rather than gaps: the actions stay the
+ * thing you look at.
+ */
+.utility-menu-group {
+  margin: 5px 9px 1px;
+  color: #9b98a6;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.utility-menu-group:not(:first-child) {
+  border-top: 1px solid #eeeaf6;
+  padding-top: 7px;
+  margin-top: 8px;
+}
+
 .utility-menu-content button:hover {
   background: #f4f1fb;
 }
@@ -318,6 +339,36 @@ h1 {
   font-size: 13px;
 }
 
+.message .interpreted-note {
+  margin-top: 10px;
+  color: #6a6a74;
+  font-size: 12.5px;
+}
+
+/* 执行过程默认收起：回答区只留成果，想核对步骤时再展开。 */
+.message .process-trail {
+  margin-top: 10px;
+  color: #6a6a74;
+  font-size: 12.5px;
+}
+
+.message .process-trail summary {
+  cursor: pointer;
+  user-select: none;
+  color: #6a6a74;
+}
+
+.message .process-trail summary:hover {
+  color: #9d79f8;
+}
+
+.message .process-trail ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  border-left: 2px solid #9d79f8;
+  list-style: none;
+}
+
 .loading p::after {
   content: "···";
   display: inline-block;
@@ -391,6 +442,152 @@ h1 {
 .saved-note {
   color: #5f646c;
   font-size: 12px;
+}
+
+/* Marks a replayed answer whose capture buttons came back without a record
+   of ever having been saved — better a hint than a silent duplicate. */
+.replay-tag {
+  align-self: center;
+  border: 1px solid #d9d4c8;
+  border-radius: 999px;
+  color: #6b6f77;
+  font-size: 11px;
+  padding: 1px 8px;
+}
+
+/* A diagram the shell will not draw: shown as source with a way to take it to
+   somewhere that will, which is where the note ends up anyway. */
+.markdown-diagram {
+  border: 1px solid #ddd3c2;
+  border-radius: 8px;
+  /* White, not the old cream: the figure below is drawn on white, and a tinted
+     card would put a cream mat around a white plot. */
+  background: #fff;
+  margin: 12px 0;
+  overflow: hidden;
+}
+
+.markdown-diagram .diagram-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid #e8e2d6;
+}
+
+.markdown-diagram .diagram-kind {
+  color: #6b6f77;
+  font-size: 12px;
+}
+
+.markdown-diagram .markdown-code {
+  background: #fbf8f2;
+  border-radius: 0;
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.markdown-diagram .diagram-hint {
+  color: #8a8f97;
+  font-size: 11px;
+  margin: 0;
+  padding: 6px 12px;
+}
+
+/**
+ * The drawn figure.
+ *
+ * The card is the diagram's own background — a diagram is often wide and its
+ * own label is the clearest title, so the frame stays neutral rather than
+ * tinting the plot. Overflow scrolls instead of squashing: shrinking a tree
+ * diagram to fit makes its crossings illegible.
+ */
+.diagram-figure {
+  overflow: auto;
+  padding: 18px 20px;
+  background: #fff;
+  color: #2b2c30;
+}
+
+.diagram-figure svg {
+  display: block;
+  height: auto;
+  margin: 0 auto;
+  max-width: 100%;
+}
+
+.diagram-figure .nodeLabel,
+.diagram-figure .edgeLabel,
+.diagram-figure text {
+  color: #2b2c30;
+}
+
+.diagram-loading,
+.diagram-error {
+  margin: 0;
+  padding: 16px 20px;
+  font-size: 13px;
+}
+
+.diagram-loading {
+  color: #8a8f97;
+}
+
+/* The error is worth seeing, not worth alarming about: the source is right
+   below it, so the reader can fix it. */
+.diagram-error {
+  background: #fdf0ee;
+  color: #a5322a;
+  line-height: 1.6;
+}
+
+.diagram-source {
+  border-top: 1px solid #e8e2d6;
+}
+
+.diagram-source > summary {
+  cursor: pointer;
+  color: #6b6f77;
+  font-size: 12px;
+  padding: 6px 12px;
+}
+
+.diagram-source > summary:hover {
+  color: #4b4f57;
+}
+
+.diagram-source .markdown-code {
+  background: #fbf8f2;
+  border-radius: 0;
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.diagram-copy {
+  background: #fff;
+  border: 1px solid #d9d4c8;
+  border-radius: 6px;
+  color: #4b4f57;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 10px;
+}
+
+.diagram-copy:hover {
+  border-color: #9d79f8;
+}
+
+.resume-note {
+  border: 1px solid #e3ded2;
+  border-radius: 8px;
+  background: #f7f5ef;
+  color: #5f646c;
+  font-size: 12px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
 }
 
 .file-preview-backdrop {
@@ -469,6 +666,231 @@ h1 {
   background: #faf8ff;
 }
 
+/* Outline variant: a delete sitting next to harmless buttons must not look
+   like the primary action on the card. */
+.file-preview-actions button.danger {
+  border-color: #e0a3a8;
+  background: #fff;
+  color: #b03a2e;
+}
+
+.file-preview-actions button.danger:hover {
+  border-color: #c0392b;
+  background: #fdf0f0;
+}
+
+/**
+ * Deletion confirmation.
+ *
+ * Deliberately a different shape from the write-preview card: that one is
+ * routine, this one is irreversible-looking. Red border, a name in the
+ * heading, and the note's own text quoted back — the user should be able to
+ * tell what they are about to lose without opening anything.
+ */
+.delete-card {
+  margin: 14px 0 0;
+  border: 1px solid #e0a3a8;
+  border-left: 4px solid #c0392b;
+  border-radius: 10px;
+  background: #fff8f8;
+  padding: 16px 18px;
+}
+
+.delete-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.delete-card-eyebrow {
+  margin: 0 0 4px;
+  color: #b03a2e;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.delete-card h3 {
+  margin: 0 0 6px;
+  color: #7d241c;
+  font-size: 15px;
+  word-break: break-all;
+}
+
+.delete-card small {
+  display: block;
+  color: #8a5a55;
+  font-size: 12px;
+}
+
+.delete-excerpt {
+  margin: 12px 0 0;
+  border-left: 2px solid #eccfd1;
+  padding-left: 10px;
+  color: #5c4a48;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.delete-warn {
+  margin: 10px 0 0;
+  border-radius: 7px;
+  background: #fdf0e6;
+  padding: 8px 10px;
+  color: #8a4b12;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.delete-reason {
+  margin: 10px 0 0;
+  color: #7a6a68;
+  font-size: 12px;
+}
+
+.delete-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+button.danger {
+  border: 1px solid #c0392b;
+  border-radius: 7px;
+  background: #c0392b;
+  color: #fff;
+}
+
+button.danger:hover:not(:disabled) {
+  background: #a5322a;
+}
+
+.delete-undo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0 0;
+  border-radius: 8px;
+  background: #f4f1fb;
+  padding: 9px 12px;
+  color: #5a4a80;
+  font-size: 13px;
+}
+
+.delete-undo button {
+  border: 1px solid #cfc4ee;
+  border-radius: 6px;
+  background: #fff;
+  padding: 4px 10px;
+  color: #4a397a;
+  font-size: 12px;
+}
+
+/** Right-click menu on a note row. */
+.note-menu-backdrop {
+  position: fixed;
+  z-index: 40;
+  inset: 0;
+}
+
+.note-menu {
+  position: absolute;
+  display: flex;
+  min-width: 170px;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid #ded9ea;
+  border-radius: 9px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(48, 32, 92, 0.18);
+  padding: 6px;
+}
+
+.note-menu-title {
+  margin: 0 0 4px;
+  overflow: hidden;
+  padding: 4px 8px;
+  color: #77757d;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-menu button {
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  padding: 7px 9px;
+  color: #33343a;
+  font-size: 13px;
+  text-align: left;
+}
+
+.note-menu button:hover {
+  background: #f4f1fb;
+}
+
+.note-menu button.danger {
+  background: transparent;
+  color: #b03a2e;
+}
+
+.note-menu button.danger:hover {
+  background: #fdf0f0;
+}
+
+/** In-place note editing. */
+.note-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 20px 24px 30px;
+}
+
+.note-editor textarea {
+  min-height: 46vh;
+  resize: vertical;
+  border: 1px solid #ded9ea;
+  border-radius: 9px;
+  background: #fff;
+  padding: 14px 16px;
+  color: #2b2c30;
+  font-family: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.note-editor textarea:focus {
+  border-color: #9d79f8;
+  outline: none;
+}
+
+.note-editor-hint {
+  margin: 0;
+  color: #77757d;
+  font-size: 12px;
+}
+
+.note-editor-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.note-editor-actions button {
+  border: 1px solid #ded9ea;
+  border-radius: 7px;
+  background: #fff;
+  padding: 7px 13px;
+  color: #4a397a;
+  font-size: 13px;
+}
+
+.note-editor-actions button:hover {
+  border-color: #9d79f8;
+  background: #faf8ff;
+}
+
 .markdown-preview {
   overflow: auto;
   padding: 24px 28px 38px;
@@ -512,6 +934,128 @@ h1 {
 
 .markdown-list-item {
   padding-left: 8px;
+}
+
+.markdown-list {
+  margin: 0 0 14px;
+  padding-left: 22px;
+}
+
+.markdown-list li {
+  margin: 0 0 6px;
+  line-height: 1.7;
+}
+
+.markdown-list ol,
+.markdown-list ul {
+  margin: 6px 0 0;
+}
+
+.markdown-inline-code {
+  border-radius: 4px;
+  background: #f0eef6;
+  padding: 1px 5px;
+  color: #4a3d7a;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.markdown-external {
+  border-bottom: 1px dotted #b3aac6;
+  color: #5d5a68;
+  cursor: help;
+}
+
+.markdown-table {
+  width: 100%;
+  margin: 16px 0 20px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.markdown-table th,
+.markdown-table td {
+  border: 1px solid #e4e0ee;
+  padding: 8px 11px;
+  text-align: left;
+  vertical-align: top;
+  line-height: 1.6;
+}
+
+.markdown-table th {
+  background: #f6f4fb;
+  color: #2e2c38;
+  font-weight: 500;
+}
+
+.markdown-table tbody tr:nth-child(even) {
+  background: #fcfbfe;
+}
+
+.markdown-callout {
+  border: 1px solid #ddd7ef;
+  border-left: 3px solid #8a6ff0;
+  border-radius: 8px;
+  background: #f7f5fe;
+  margin: 16px 0;
+  padding: 12px 14px;
+}
+
+.markdown-callout .callout-label {
+  margin: 0 0 6px;
+  color: #5b47b8;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+.markdown-callout div > p {
+  margin: 0 0 6px;
+}
+
+.markdown-callout div > p:last-child {
+  margin-bottom: 0;
+}
+
+.callout-abstract,
+.callout-summary {
+  border-left-color: #7f77dd;
+  background: #f4f2fe;
+}
+
+.callout-warning,
+.callout-caution {
+  border-left-color: #d99122;
+  background: #fdf6e8;
+}
+
+.callout-warning .callout-label,
+.callout-caution .callout-label {
+  color: #8a5c07;
+}
+
+.callout-danger,
+.callout-error {
+  border-left-color: #d3544f;
+  background: #fdf2f1;
+}
+
+.callout-danger .callout-label,
+.callout-error .callout-label {
+  color: #a33430;
+}
+
+.callout-tip,
+.callout-hint,
+.callout-important {
+  border-left-color: #3fa87a;
+  background: #f0faf5;
+}
+
+.callout-tip .callout-label,
+.callout-hint .callout-label,
+.callout-important .callout-label {
+  color: #21795a;
 }
 
 .markdown-code {
@@ -682,16 +1226,6 @@ h1 {
   }
 }
 
-.composer .composer-plan {
-  background: #f3f0ff;
-  color: #4a3a8f;
-}
-
-.composer .composer-plan:disabled {
-  background: #ececf1;
-  color: #9a9aa2;
-}
-
 .run-card {
   border: 1px solid #e4e1f5;
   border-radius: 14px;
@@ -733,72 +1267,6 @@ h1 {
   font-size: 13px;
 }
 
-.run-steps {
-  list-style: none;
-  margin: 14px 0 0;
-  padding: 0;
-  display: grid;
-  gap: 10px;
-}
-
-.run-step {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 14px;
-  border: 1px solid #eceaf6;
-  border-radius: 11px;
-  background: #fff;
-  padding: 11px 13px;
-}
-
-.run-step.status-completed {
-  border-color: #cfe6cf;
-}
-
-.run-step.status-failed,
-.run-step.status-blocked {
-  border-color: #f0cdcd;
-}
-
-.run-step-title {
-  margin: 0;
-  font-weight: 600;
-  font-size: 14px;
-}
-
-.run-step-reason {
-  margin: 4px 0 0;
-  color: #7b7b85;
-  font-size: 12.5px;
-}
-
-.run-step-result {
-  margin: 6px 0 0;
-  color: #3f6b3f;
-  font-size: 12.5px;
-}
-
-.run-step-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.run-step-status {
-  font-size: 12px;
-  color: #83838d;
-}
-
-.run-step-actions button {
-  border: 1px solid #d8d8e0;
-  background: #fff;
-  border-radius: 8px;
-  padding: 6px 11px;
-  font-size: 12.5px;
-}
-
 .preview-list {
   list-style: none;
   margin: 14px 0 0;
@@ -815,14 +1283,114 @@ h1 {
 
 .preview-body {
   margin: 0;
-  max-height: 190px;
+  max-height: 260px;
   overflow: auto;
   border: 1px solid #eceaf6;
   border-radius: 9px;
   background: #fff;
-  padding: 10px 12px;
-  font: 12px/1.55 "Cascadia Mono", Consolas, monospace;
+  padding: 10px 14px;
+}
+
+/* Everything the Markdown renderer can emit, whether it sits in a note preview,
+   an agent answer or a write preview. */
+.message-body p {
+  margin: 0 0 10px;
+}
+
+.message-body p:last-child {
+  margin-bottom: 0;
+}
+
+.message-body h1,
+.message-body h2,
+.message-body h3,
+.message-body h4,
+.message-body h5,
+.message-body h6 {
+  margin: 16px 0 8px;
+  color: #24232a;
+  line-height: 1.35;
+}
+
+.message-body h1 { font-size: 19px; }
+.message-body h2 { font-size: 17px; }
+.message-body h3 { font-size: 15px; }
+.message-body h4,
+.message-body h5,
+.message-body h6 { font-size: 14px; }
+
+.message-body > :first-child {
+  margin-top: 0;
+}
+
+.message-body blockquote {
+  margin: 10px 0;
+  border-left: 3px solid #c5afff;
+  padding-left: 10px;
+  color: #595662;
+}
+
+.message-body hr {
+  border: 0;
+  border-top: 1px solid #e8e5ef;
+  margin: 14px 0;
+}
+
+.message-body .markdown-code {
+  overflow: auto;
+  margin: 10px 0;
+  border-radius: 8px;
+  background: #282832;
+  padding: 11px 13px;
+  color: #f2effa;
+  font: 12px/1.6 "Cascadia Mono", Consolas, monospace;
   white-space: pre-wrap;
+}
+
+.message-body .markdown-table {
+  width: 100%;
+  margin: 12px 0;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.message-body .markdown-table th,
+.message-body .markdown-table td {
+  border: 1px solid #e4e0ee;
+  padding: 6px 9px;
+  text-align: left;
+  vertical-align: top;
+  line-height: 1.6;
+}
+
+.message-body .markdown-table th {
+  background: #f6f4fb;
+  font-weight: 500;
+}
+
+.message-body .markdown-callout {
+  border: 1px solid #ddd7ef;
+  border-left: 3px solid #8a6ff0;
+  border-radius: 8px;
+  background: #f7f5fe;
+  margin: 12px 0;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+.message-body .markdown-callout .callout-label {
+  margin: 0 0 5px;
+  color: #5b47b8;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.message-body .markdown-callout div > p {
+  margin: 0 0 6px;
+}
+
+.message-body .markdown-callout div > p:last-child {
+  margin-bottom: 0;
 }
 
 .health-card {
@@ -873,6 +1441,12 @@ h1 {
   border: 1px solid #f2e6d2;
   border-radius: 10px;
   padding: 10px 12px;
+}
+
+.health-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .health-topic {

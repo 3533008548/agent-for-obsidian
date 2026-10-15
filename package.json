@@ -27,5 +27,8 @@
     "typescript": "^5.8.3",
     "vite": "^6.3.5",
     "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "mermaid": "^12.1.0"
   }
 }

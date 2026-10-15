@@ -3,12 +3,15 @@ import { hashText } from "../domain/content-hash";
 
 const MAX_CHUNK_CHARACTERS = 2_400;
 
+const FENCE = /^```/;
+const DIAGRAM_FENCE = /^```(?:mermaid|svg)\b/i;
+
 /**
  * Bumped whenever the chunking rules change. A persisted index snapshot that
  * was written by a different parser version is discarded wholesale, because
  * chunk content and locators are no longer comparable.
  */
-export const MARKDOWN_PARSER_VERSION = "markdown-v1";
+export const MARKDOWN_PARSER_VERSION = "markdown-v2";
 
 export interface MarkdownChunk {
   source: SourceRef;
@@ -27,6 +30,7 @@ export function parseMarkdownIntoChunks(path: string, markdown: string): Markdow
   let currentHeading: string | null = null;
   let currentHeadingPath: string[] = [];
   let startLine = 1;
+  let skippingDiagram = false;
 
   const flush = (endLine: number): void => {
     const text = currentLines.join("\n").trim();
@@ -56,6 +60,19 @@ export function parseMarkdownIntoChunks(path: string, markdown: string): Markdow
   };
 
   lines.forEach((line, index) => {
+    // Diagram source is drawing instructions, not prose: indexed as text it
+    // fills the corpus with "-->" and "subgraph" and tells retrieval nothing.
+    if (skippingDiagram) {
+      if (FENCE.test(line.trim())) {
+        skippingDiagram = false;
+      }
+      return;
+    }
+    if (DIAGRAM_FENCE.test(line.trim())) {
+      skippingDiagram = true;
+      return;
+    }
+
     const headingMatch = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
     if (!headingMatch) {
       currentLines.push(line);

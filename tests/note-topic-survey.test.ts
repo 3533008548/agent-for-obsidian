@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 import { parseMarkdownIntoChunks } from "../core/indexing/markdown-parser";
 import { batchNoteDigests, buildNoteDigests, renderNoteDigest } from "../core/indexing/note-survey";
 import {
-  buildClusterMessages,
-  buildMergeMessages,
-  parseTopicClusters,
-  parseTopicSurveyPlan,
-  renderTopicMapMarkdown
+  buildAssignmentMessages,
+  buildOverviewMessages,
+  buildTopicProposalMessages,
+  parseNoteAssignments,
+  parseOverview,
+  parseTopicProposals,
+  renderTopicMapMarkdown,
+  type TopicMapTopic
 } from "../core/wiki/topic-discovery";
 import { detectDesktopAgentIntent } from "../core/desktop/desktop-intent-router";
 
@@ -71,74 +74,95 @@ describe("note digests", () => {
 });
 
 describe("topic discovery parsing", () => {
-  it("parses clusters and drops paths the model invented", () => {
-    const clusters = parseTopicClusters(
+  it("parses proposals and drops paths the model invented", () => {
+    const proposals = parseTopicProposals(
       JSON.stringify({
-        clusters: [
-          { label: "LangGraph", paths: ["AI/LangGraph/StateGraph.md", "AI/不存在的笔记.md"] }
-        ]
-      }),
-      new Set(["AI/LangGraph/StateGraph.md"])
-    );
-
-    expect(clusters).toHaveLength(1);
-    expect(clusters[0]?.paths).toEqual(["AI/LangGraph/StateGraph.md"]);
-  });
-
-  it("rejects a response with no clusters", () => {
-    expect(() => parseTopicClusters('{"clusters":[]}', new Set())).toThrow();
-    expect(() => parseTopicClusters("不是 JSON", new Set())).toThrow();
-  });
-
-  it("parses the merged plan", () => {
-    const plan = parseTopicSurveyPlan(
-      JSON.stringify({
-        overview: "这个库集中在 Agent 工程与笔记法。",
         topics: [
-          { name: "LangGraph", summary: "状态图与持久化。", paths: ["AI/LangGraph/StateGraph.md"] },
-          { name: "卡片笔记", summary: "卢曼的方法。", paths: ["读书/卡片笔记.md"] }
+          {
+            name: "LangGraph",
+            definition: "LangGraph 的状态图与持久化机制",
+            parent: "Agent 工程",
+            paths: ["AI/LangGraph/StateGraph.md", "AI/不存在的笔记.md"]
+          },
+          { name: "Agent 工程", definition: "Agent 框架与工程实践", paths: ["AI/LangGraph/持久化.md"] }
         ]
       }),
-      new Set(["AI/LangGraph/StateGraph.md", "读书/卡片笔记.md"])
+      new Set(["AI/LangGraph/StateGraph.md", "AI/LangGraph/持久化.md"])
     );
 
-    expect(plan.topics.map((topic) => topic.name)).toEqual(["LangGraph", "卡片笔记"]);
-    expect(plan.overview).toContain("Agent 工程");
+    expect(proposals).toHaveLength(2);
+    expect(proposals[0]?.paths).toEqual(["AI/LangGraph/StateGraph.md"]);
+    // parent 按名称解析成 id，跨批次才能折叠小主题
+    expect(proposals[0]?.parentId).toBe(proposals[1]?.id);
   });
 
-  it("fails when every topic was filtered out", () => {
-    expect(() =>
-      parseTopicSurveyPlan(
-        '{"overview":"x","topics":[{"name":"空","summary":"s","paths":["没有/这篇.md"]}]}',
-        new Set()
-      )
-    ).toThrow();
+  it("rejects a response with no topics", () => {
+    expect(() => parseTopicProposals('{"topics":[]}', new Set())).toThrow();
+    expect(() => parseTopicProposals("不是 JSON", new Set())).toThrow();
   });
 
-  it("renders a map that links to the notes it groups", () => {
+  it("assigns notes only to topics that exist", () => {
+    const votes = parseNoteAssignments(
+      JSON.stringify({
+        assignments: [
+          { path: "AI/LangGraph/StateGraph.md", topicId: "langgraph", confidence: 0.9 },
+          { path: "AI/LangGraph/持久化.md", topicId: "编造的主题", confidence: 0.9 },
+          { path: "AI/不存在的笔记.md", topicId: "langgraph", confidence: 0.9 },
+          { path: "读书/卡片笔记.md", topicId: "unclassified", confidence: 0.2 }
+        ]
+      }),
+      new Set(["AI/LangGraph/StateGraph.md", "AI/LangGraph/持久化.md", "读书/卡片笔记.md"]),
+      new Set(["langgraph"])
+    );
+
+    expect(votes.map((vote) => vote.path)).toEqual(["AI/LangGraph/StateGraph.md", "读书/卡片笔记.md"]);
+    expect(votes[1]?.topicId).toBe("unclassified");
+  });
+
+  it("parses the overview", () => {
+    expect(parseOverview('{"overview":"这个库集中在 Agent 工程。"}')).toContain("Agent 工程");
+    expect(() => parseOverview("不是 JSON")).toThrow();
+  });
+
+  it("renders a map that links to every note it groups", () => {
+    const topics: TopicMapTopic[] = [{
+      id: "langgraph",
+      name: "LangGraph",
+      definition: "状态图与持久化。",
+      paths: ["AI/LangGraph/StateGraph.md", "AI/LangGraph/持久化.md"],
+      secondary: [{ path: "AI/LangGraph/持久化.md", topicName: "Agent 工程" }]
+    }];
     const markdown = renderTopicMapMarkdown(
-      {
-        overview: "整体观察。",
-        topics: [{ name: "LangGraph", summary: "状态图与持久化。", paths: ["AI/LangGraph/StateGraph.md"] }]
-      },
+      { overview: "整体观察。", topics, unclassified: ["读书/索引.md"], sparse: [] },
       "2026-09-29T10:00:00.000Z"
     );
 
     expect(markdown).toContain("# 知识库地图");
-    expect(markdown).toContain("| LangGraph | 1 | [[AI/LangGraph/StateGraph.md]] |");
+    expect(markdown).toContain("| LangGraph | 2 | [[AI/LangGraph/StateGraph.md]] |");
+    expect(markdown).toContain("- [[AI/LangGraph/持久化.md]]（另见：Agent 工程）");
+    // 覆盖全量，不再只列代表笔记
     expect(markdown).toContain("- [[AI/LangGraph/StateGraph.md]]");
+    expect(markdown).toContain("### 未归类");
     expect(markdown).toContain("generatedAt: 2026-09-29T10:00:00.000Z");
   });
 
-  it("keeps note paths out of the instructions that reach the model", () => {
-    const stateGraph = buildNoteDigests(LIBRARY).find(
-      (digest) => digest.path === "AI/LangGraph/StateGraph.md"
-    )!;
-    const prompt = buildClusterMessages([stateGraph]).map((message) => message.content).join("\n");
-    expect(prompt).toContain("AI/LangGraph/StateGraph.md");
-    expect(prompt).toContain("不能虚构笔记");
-    expect(buildMergeMessages([{ label: "LangGraph", paths: ["AI/LangGraph/StateGraph.md"] }])[0]?.content)
-      .toContain("候选主题");
+  it("tells the model to group by judgement, not by keyword", () => {
+    const digests = buildNoteDigests(LIBRARY);
+    const proposal = buildTopicProposalMessages(digests, ["LangGraph"]).map((message) => message.content).join("\n");
+    expect(proposal).toContain("AI/LangGraph/StateGraph.md");
+    expect(proposal).toContain("不要按专有名词分组");
+    expect(proposal).toContain("已有主题");
+
+    const assignment = buildAssignmentMessages(
+      [{ id: "langgraph", name: "LangGraph", definition: "状态图与持久化。" }],
+      digests
+    ).map((message) => message.content).join("\n");
+    expect(assignment).toContain("id: langgraph");
+    expect(assignment).toContain("Redis 事件流 TTL");
+
+    const overview = buildOverviewMessages([{ name: "LangGraph", count: 2, samples: ["StateGraph"] }], 4)
+      .map((message: { content: string }) => message.content).join("\n");
+    expect(overview).toContain("LangGraph：2 篇");
   });
 });
 

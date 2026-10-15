@@ -1,11 +1,11 @@
-import { appendFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { KnowledgeFile, KnowledgeRepository } from "../core/knowledge-repository";
 
 /**
  * Desktop adapter for a user-selected Markdown directory.
- * Paths exposed to the agent are always normalized relative paths, matching
- * the paths currently used inside an Obsidian Vault.
+ * Paths exposed to the agent are always normalized relative paths, so they read
+ * the same in a note link as they do in the file tree.
  */
 export class NodeFileSystemKnowledgeRepository implements KnowledgeRepository {
   private readonly rootDirectory: string;
@@ -67,6 +67,21 @@ export class NodeFileSystemKnowledgeRepository implements KnowledgeRepository {
     const targetPath = this.resolvePath(path);
     await mkdir(dirname(targetPath), { recursive: true });
     await appendFile(targetPath, content, "utf8");
+  }
+
+  /**
+   * Deletes one note.
+   *
+   * Exists for renames, which are write-new-then-delete-old; every other
+   * operation in this app creates or overwrites. The path guard is the same
+   * one writes go through, so a rename cannot delete outside the vault.
+   */
+  async deleteText(path: string): Promise<void> {
+    const targetPath = this.resolvePath(path);
+    if (!targetPath.toLocaleLowerCase().endsWith(".md")) {
+      throw new Error(`只允许删除 Markdown 笔记：${path}`);
+    }
+    await rm(targetPath, { force: false });
   }
 
   async readRaw(path: string): Promise<string> {

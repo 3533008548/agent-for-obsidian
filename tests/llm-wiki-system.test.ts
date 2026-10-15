@@ -55,6 +55,22 @@ describe("LLM Wiki system", () => {
     expect(compilation.nextRegistry.errorBook).toEqual([]);
   });
 
+  it("puts two wordings of one theme in the same folder", () => {
+    const first = compileLlmWikiTopic(session, createLlmWikiRegistry(), "知识体系/Agent", {
+      topicId: "rag-与检索基础"
+    });
+    const second = compileLlmWikiTopic(
+      { ...session, topic: "RAG 检索" },
+      first.nextRegistry,
+      "知识体系/Agent",
+      { topicId: "rag-与检索基础" }
+    );
+
+    expect(first.pages.some((page) => page.relativePath.startsWith("LLM Wiki/rag-与检索基础/"))).toBe(true);
+    expect(second.nextRegistry.topics).toHaveLength(1);
+    expect(second.nextRegistry.topics[0]?.id).toBe("rag-与检索基础");
+  });
+
   it("searches compiled pages, follows explicit links, and marks only dependent topics stale", () => {
     const compilation = compileLlmWikiTopic(session, createLlmWikiRegistry(), "知识体系/Agent");
     const found = searchLlmWiki(compilation.nextRegistry, "Checkpoint");

@@ -7,12 +7,21 @@ export const POLICY_ACTIONS = [
   "createKnowledgeSystemNote",
   "appendDailyNote",
   "modifyExistingNote",
+  "deleteNote",
   "createAgentSession",
   "appendAgentSession",
   "updateAgentProfile"
 ] as const;
 
 export type PolicyAction = (typeof POLICY_ACTIONS)[number];
+
+/**
+ * Deleted notes are moved here rather than erased.
+ *
+ * Declared next to the policy because the policy has to refuse any delete
+ * aimed inside it — importing the delete service instead would be circular.
+ */
+export const TRASH_FOLDER = ".trash";
 
 export interface PermissionPolicy {
   enabled: Record<PolicyAction, boolean>;
@@ -50,6 +59,7 @@ export function createDefaultPermissionPolicy(): PermissionPolicy {
       createKnowledgeSystemNote: true,
       appendDailyNote: true,
       modifyExistingNote: true,
+      deleteNote: true,
       createAgentSession: true,
       appendAgentSession: true,
       updateAgentProfile: true
@@ -59,7 +69,7 @@ export function createDefaultPermissionPolicy(): PermissionPolicy {
     indexableFolders: ["*"],
     modifiableFolders: ["*"],
     sensitiveFolders: [],
-    inboxFolder: "00 Inbox/Agent",
+    inboxFolder: "daily",
     dailyFolder: "daily",
     knowledgeSystemFolder: "知识体系/Agent",
     agentMemoryFolder: "00 Inbox/Agent"
@@ -121,6 +131,14 @@ export class PolicyEngine {
         return this.decideFixedTarget(action, normalizedPath, this.policy.agentMemoryFolder, "Agent 记忆目录");
       case "modifyExistingNote":
         return this.decideFolderAccess(action, normalizedPath, this.policy.modifiableFolders, "修改范围");
+      case "deleteNote":
+        // Deletion is scoped to the same allowlist as editing. The trash folder
+        // itself must never be a target: deleting from the trash would make a
+        // recoverable deletion unrecoverable.
+        if (isWithinFolder(normalizedPath, TRASH_FOLDER)) {
+          return this.denied(action, "回收站内的文件不能作为删除目标。");
+        }
+        return this.decideFolderAccess(action, normalizedPath, this.policy.modifiableFolders, "删除范围");
       default:
         return this.denied(action, "未知操作类型。");
     }

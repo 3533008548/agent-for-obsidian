@@ -70,8 +70,12 @@ describe("PolicyEngine", () => {
     policy.enabled.appendDailyNote = true;
     const engine = new PolicyEngine(policy);
 
-    expect(engine.decide({ action: "createInboxNote", targetPath: "00 Inbox/Agent/idea.md" }).allowed).toBe(true);
+    // Captured answers go to the Daily folder. Inbox used to be the agent's own
+    // memory folder, which made captured notes unfindable.
+    expect(engine.decide({ action: "createInboxNote", targetPath: "daily/idea.md" }).allowed).toBe(true);
     expect(engine.decide({ action: "createInboxNote", targetPath: "Notes/idea.md" }).allowed).toBe(false);
+    // The agent's memory is not a capture destination.
+    expect(engine.decide({ action: "createInboxNote", targetPath: "00 Inbox/Agent/idea.md" }).allowed).toBe(false);
     expect(engine.decide({ action: "createKnowledgeSystemNote", targetPath: "知识体系/Agent/机器学习.md" }).allowed).toBe(true);
     expect(engine.decide({ action: "createKnowledgeSystemNote", targetPath: "Notes/机器学习.md" }).allowed).toBe(false);
     expect(engine.decide({ action: "appendDailyNote", targetPath: "daily/机器学习.md" }).allowed).toBe(true);

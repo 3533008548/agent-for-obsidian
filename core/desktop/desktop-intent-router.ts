@@ -8,13 +8,19 @@ export type DesktopAgentIntent =
   | "open-assistant-state"
   | "set-current-focus"
   | "compile-wiki"
+  | "ingest-note"
+  | "list-uncompiled"
   | "survey-wiki"
   | "expand-wiki"
   | "inspect-wiki-sources"
   | "process-images"
   | "format-clipboard"
   | "complete-relations"
-  | "verify-wiki";
+  | "verify-wiki"
+  | "wiki-overlap"
+  | "tidy-notes"
+  | "rename-notes"
+  | "scan-duplicates";
 
 export interface DesktopAgentIntentRequest {
   question: string;
@@ -69,11 +75,32 @@ export function detectDesktopAgentIntent(request: DesktopAgentIntentRequest): De
   if (/(?:检查|查看|核查|校验).{0,16}(?:llm\s*wiki|知识百科|笔记百科|wiki).{0,12}(?:来源|证据)|(?:来源|证据).{0,12}(?:检查|查看|核查|校验).{0,16}(?:llm\s*wiki|知识百科|笔记百科|wiki)/iu.test(question)) {
     return { intent: "inspect-wiki-sources", subject: extractSubject(question, /(?:llm\s*wiki|知识百科|笔记百科|wiki)/iu) };
   }
+  if (/(?:确认|执行|开始|就这样|可以了|那就|吧).{0,6}(?:收录|纳入|并入)|(?:收录|纳入|并入).{0,6}(?:确认|执行)|(?:并入|纳入|收录)(?:吧|就行|即可)/u.test(question)) {
+    return { intent: "ingest-note" };
+  }
+  if (/(?:收录|纳入|并入|加入|吸收).{0,12}(?:知识库|笔记|llm\s*wiki|知识百科|笔记百科|wiki|这篇|这篇笔记)|(?:llm\s*wiki|知识百科|笔记百科|wiki).{0,12}(?:收录|纳入|并入)/iu.test(question)) {
+    return { intent: "ingest-note" };
+  }
+  if (/(?:还有|哪些|列出|查看|看看).{0,8}(?:没|未|尚未).{0,6}(?:收录|编译|纳入)|(?:待收录|未收录)/u.test(question)) {
+    return { intent: "list-uncompiled" };
+  }
   if (/(?:编译|生成|创建|构建).{0,16}(?:llm\s*wiki|知识百科|笔记百科|wiki)|(?:llm\s*wiki|知识百科|笔记百科|wiki).{0,16}(?:编译|生成|创建|构建)/iu.test(question)) {
     return { intent: "compile-wiki", subject: extractSubject(question, /(?:llm\s*wiki|知识百科|笔记百科|wiki)/iu) };
   }
   if (/(?:联网)?(?:核验|校验|比对|查漏补缺).{0,16}(?:llm\s*wiki|知识百科|笔记百科|wiki)|(?:llm\s*wiki|知识百科|笔记百科|wiki).{0,16}(?:联网)?(?:核验|校验|比对|查漏补缺)/iu.test(question)) {
     return { intent: "verify-wiki", subject: extractSubject(question, /(?:llm\s*wiki|知识百科|笔记百科|wiki)/iu) };
+  }
+  if (/(?:wiki|llm\s*wiki|知识百科|笔记百科).{0,12}(?:重复|重叠)|(?:重复|重叠).{0,12}(?:wiki|llm\s*wiki|知识百科|笔记百科)/iu.test(question)) {
+    return { intent: "wiki-overlap" };
+  }
+  if (/(?:检查|查一下|查找|扫描|整理|处理|看看).{0,8}(?:重复|冗余|重叠|相似).{0,6}(?:笔记|内容)?|(?:笔记|内容).{0,6}(?:重复|冗余|重叠)|(?:重复|冗余|重叠).{0,6}笔记/u.test(question)) {
+    return { intent: "scan-duplicates" };
+  }
+  if (/(?:执行|应用|确认|开始|进行).{0,6}(?:笔记)?改名|(?:笔记)?改名.{0,6}(?:执行|应用|确认|开始)/u.test(question)) {
+    return { intent: "rename-notes" };
+  }
+  if (/(?:整理|检查|规范|重命名|改名|修正).{0,12}(?:笔记)?(?:命名|文件名|标题名)|(?:笔记)?(?:命名|文件名).{0,8}(?:整理|检查|规范)/u.test(question)) {
+    return { intent: "tidy-notes" };
   }
   if (/(?:梳理|整理|盘点|划分|归纳|绘制|生成).{0,10}(?:知识库|笔记库|全部笔记|知识地图)|(?:知识库|笔记库).{0,8}(?:地图|主题)/u.test(question)) {
     return { intent: "survey-wiki" };

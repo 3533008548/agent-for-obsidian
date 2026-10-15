@@ -15,7 +15,7 @@ export class StreamCancelledError extends Error {
   }
 }
 
-/** Node/Electron request adapter for providers previously called through Obsidian requestUrl. */
+/** Node/Electron request adapter, so providers are called with plain fetch. */
 export const postJsonWithFetch: JsonPost = async <T>(request: JsonPostRequest): Promise<T> => {
   if (!request.apiKey.trim()) {
     throw new Error("请先在本地 .env 中填写 " + request.providerName + " 的 API Key。");

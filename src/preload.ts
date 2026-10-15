@@ -3,7 +3,6 @@ import type { DesktopAgentStreamEvent, DesktopApi } from "./shared/desktop-api";
 
 const api: DesktopApi = {
   chooseWorkspace: () => ipcRenderer.invoke("workspace:choose"),
-  migrateObsidianVault: () => ipcRenderer.invoke("workspace:migrate-obsidian"),
   getWorkspace: () => ipcRenderer.invoke("workspace:get"),
   getProviderStatus: () => ipcRenderer.invoke("provider:get-status"),
   openModelConfig: () => ipcRenderer.invoke("provider:open-config"),
@@ -18,19 +17,27 @@ const api: DesktopApi = {
       ipcRenderer.removeListener("agent:answer-stream-event", wrapped);
     };
   },
-  saveAnswer: (action, subject, content, sources) => ipcRenderer.invoke("answer:save", action, subject, content, sources),
+  saveAnswer: (action, subject, content, sources, turnId) =>
+    ipcRenderer.invoke("answer:save", action, subject, content, sources, turnId),
+  resumeConversation: () => ipcRenderer.invoke("session:resume"),
   createWikiUpdatePreview: (id) => ipcRenderer.invoke("wiki:create-update-preview", id),
+  auditWikiMissingSources: (topic) => ipcRenderer.invoke("wiki:audit-missing-sources", topic),
   reviewWikiHealth: () => ipcRenderer.invoke("wiki:health-review"),
   search: (query) => ipcRenderer.invoke("knowledge:search", query),
   listNotes: () => ipcRenderer.invoke("knowledge:list-notes"),
   previewSource: (path) => ipcRenderer.invoke("knowledge:preview-source", path),
   openSource: (path) => ipcRenderer.invoke("knowledge:open-source", path),
-  planAgentRun: (goal) => ipcRenderer.invoke("agent:plan-run", goal),
-  runAgentStep: (runId, stepId) => ipcRenderer.invoke("agent:run-step", runId, stepId),
-  skipAgentStep: (runId, stepId) => ipcRenderer.invoke("agent:skip-step", runId, stepId),
-  cancelAgentRun: (runId) => ipcRenderer.invoke("agent:cancel-run", runId),
   getWritePreviews: () => ipcRenderer.invoke("write:get-previews"),
-  applyWritePreviews: () => ipcRenderer.invoke("write:apply-previews")
+  applyWritePreviews: () => ipcRenderer.invoke("write:apply-previews"),
+  // Deletion is deliberately split: the preview only describes, and only
+  // confirmDelete moves a note. The renderer has no "delete now" call.
+  previewDeleteNote: (targetPath: string, reason?: string) =>
+    ipcRenderer.invoke("note:preview-delete", targetPath, reason),
+  getPendingDelete: () => ipcRenderer.invoke("note:get-pending-delete"),
+  confirmDelete: (manifestPath?: string) => ipcRenderer.invoke("note:confirm-delete", manifestPath),
+  cancelDelete: () => ipcRenderer.invoke("note:cancel-delete"),
+  saveNoteEdit: (path: string, content: string) => ipcRenderer.invoke("note:save-edit", path, content),
+  openTrashFolder: () => ipcRenderer.invoke("note:open-trash")
 };
 
 contextBridge.exposeInMainWorld("knowledgeLoop", api);

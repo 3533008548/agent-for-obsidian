@@ -7,4 +7,8 @@ data.json
 *.log
 knowledge/
 artifacts/
+# Backup folders the wiki lint makes before rewriting pages. They exist to make
+# the rewrite recoverable, so they are working files rather than part of the
+# library — and they are safe to delete once the new pages have been read.
+.wiki-lint-backup-*/
 .DS_Store

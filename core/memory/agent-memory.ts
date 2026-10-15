@@ -1,5 +1,5 @@
 import { hashText } from "../domain/content-hash";
-import { normalizeVaultPath } from "../policy/policy-engine";
+import { TRASH_FOLDER, normalizeVaultPath } from "../policy/policy-engine";
 
 const MAX_AGENT_SESSIONS = 30;
 const MAX_PROFILE_CONTEXT_CHARACTERS = 2_400;
@@ -161,9 +161,41 @@ export function getAgentProfilePath(memoryFolder: string): string {
   return `${folder}/Agent Profile.md`;
 }
 
+/**
+ * True for files the agent keeps about itself rather than notes for the user.
+ *
+ * Session transcripts, the profile and the assistant state live beside the
+ * notes but are not notes: they must stay out of the explorer and out of
+ * anything that treats every Markdown file as part of the library.
+ */
 export function isAgentMemoryPath(path: string, memoryFolder: string): boolean {
   const folder = normalizeVaultPath(memoryFolder);
-  return Boolean(folder && (path === `${folder}/Agent Profile.md` || path.startsWith(`${folder}/Sessions/`)));
+  if (!folder) {
+    return false;
+  }
+  const normalized = path.replace(/\\/g, "/");
+  return (
+    normalized === `${folder}/Agent Profile.md` ||
+    normalized === `${folder}/Assistant State.md` ||
+    normalized.startsWith(`${folder}/Sessions/`)
+  );
+}
+
+/**
+ * True for every path the app keeps for itself, including the trash.
+ *
+ * One predicate for both the index and the note list on purpose. They drifted
+ * once: the trash was excluded from the note list but not the index, so a
+ * deleted note stopped being browsable and kept answering questions.
+ */
+export function isInternalLibraryPath(path: string, memoryFolder: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  return (
+    normalized.startsWith(".obsidian/") ||
+    normalized.startsWith(".knowledge-loop-agent/") ||
+    normalized.startsWith(`${TRASH_FOLDER}/`) ||
+    isAgentMemoryPath(normalized, memoryFolder)
+  );
 }
 
 export function renderNewAgentSession(session: AgentSession): string {

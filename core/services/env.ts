@@ -14,7 +14,7 @@ export function readEnvValue(contents: string, key: string): string | null {
 }
 
 export const ENV_TEMPLATE = [
-  "# 本文件仅保存在本机的 Obsidian 插件目录，请不要提交到 Git。",
+  "# 本文件仅保存在本机的应用数据目录，请不要提交到 Git。",
   "# 文本问答/笔记提案使用 DeepSeek；PDF OCR 与图片解析使用 GLM；联网检索使用 Tavily。",
   "DEEPSEEK_API_KEY=",
   "GLM_API_KEY=",

@@ -49,6 +49,43 @@ describe("Markdown parsing and search", () => {
     expect(searchMarkdownChunks(chunks, "  ")).toEqual([]);
   });
 
+  it("keeps diagram source out of the corpus", () => {
+    const withDiagram = parseMarkdownIntoChunks(
+      "daily/红黑树.md",
+      [
+        "# 红黑树",
+        "",
+        "红黑树是一种自平衡二叉搜索树。",
+        "",
+        "```mermaid",
+        "flowchart TD",
+        "  A[红黑树] --> B[旋转]",
+        "```",
+        "",
+        "## 复杂度",
+        "",
+        "查找是 O(log n)。"
+      ].join("\n")
+    );
+
+    const text = withDiagram.map((chunk) => chunk.content).join("\n");
+    expect(text).not.toContain("flowchart");
+    expect(text).not.toContain("-->");
+    // The prose around it is still indexed, including what follows the block.
+    expect(text).toContain("自平衡二叉搜索树");
+    expect(text).toContain("查找是 O(log n)");
+    expect(withDiagram.some((chunk) => chunk.heading === "复杂度")).toBe(true);
+  });
+
+  it("still indexes ordinary code blocks", () => {
+    const withCode = parseMarkdownIntoChunks(
+      "daily/异步.md",
+      ["# 异步", "", "```python", "async def step():", "    await sleep(1)", "```"].join("\n")
+    );
+
+    expect(withCode.map((chunk) => chunk.content).join("\n")).toContain("async def step");
+  });
+
   it("does not treat generic Chinese question words as a match for a missing technical term", () => {
     const unrelated = parseMarkdownIntoChunks(
       "daily/编程概念.md",

@@ -1,5 +1,5 @@
 import { hashText } from "../domain/content-hash";
-import type { SourceRef } from "../domain/source-ref";
+import { humanizeLocator, type SourceRef } from "../domain/source-ref";
 import { normalizeVaultPath } from "../policy/policy-engine";
 
 export interface CreateInboxNoteProposal {
@@ -7,6 +7,9 @@ export interface CreateInboxNoteProposal {
   title: string;
   content: string;
   sources: SourceRef[];
+  /** Subject-level topic and the original phrasings, kept for retrieval. */
+  topic?: string;
+  aliases?: string[];
 }
 
 export interface AppendDailyNoteProposal {
@@ -79,11 +82,20 @@ export function createManualCaptureSource(content: string): SourceRef {
 export function createManualCaptureProposal(
   type: ManualCaptureAction,
   subject: string,
-  content: string
+  content: string,
+  topic?: string,
+  aliases?: string[]
 ): AgentActionProposal {
   const sources = [createManualCaptureSource(content)];
   if (type === "createInboxNote") {
-    return { type, title: subject, content, sources };
+    return {
+      type,
+      title: subject,
+      content,
+      sources,
+      ...(topic ? { topic } : {}),
+      ...(aliases?.length ? { aliases } : {})
+    };
   }
   return { type, topic: subject, content, sources };
 }
@@ -92,11 +104,20 @@ export function createSourcedCaptureProposal(
   type: ManualCaptureAction,
   subject: string,
   content: string,
-  sources: SourceRef[]
+  sources: SourceRef[],
+  topic?: string,
+  aliases?: string[]
 ): AgentActionProposal {
   const uniqueSources = deduplicateSources(sources);
   if (type === "createInboxNote") {
-    return { type, title: subject, content, sources: uniqueSources };
+    return {
+      type,
+      title: subject,
+      content,
+      sources: uniqueSources,
+      ...(topic ? { topic } : {}),
+      ...(aliases?.length ? { aliases } : {})
+    };
   }
   return { type, topic: subject, content, sources: uniqueSources };
 }
@@ -214,19 +235,38 @@ export function buildActionTargetPath(
   return `${folder}/${stem}.md`;
 }
 
+/**
+ * Closes a code fence the model left open.
+ *
+ * A truncated answer stops mid-block — a real one ended at `New Session Ticket`
+ * / `Note` with no closing fence — and the footer we append afterwards would then
+ * land *inside* that block. The note stops rendering, the diagram shows a parse
+ * error, and the provenance line disappears into the diagram source. Counting
+ * fence lines is enough to notice: an odd count means we are still inside one.
+ */
+export function closeDanglingCodeFence(content: string): string {
+  const text = content.trim();
+  if (!text) {
+    return "";
+  }
+  const fences = text.split("\n").filter((line) => /^\s*(?:```|~~~)/u.test(line)).length;
+  return fences % 2 === 1 ? `${text}\n\n\`\`\`\n` : `${text}\n`;
+}
+
 export function renderCreatedInboxNote(proposal: CreateInboxNoteProposal, createdAt: Date): string {
   return [
     "---",
     "agent-created: true",
     `created: \"${formatLocalTimestamp(createdAt)}\"`,
+    ...(proposal.topic ? [`topic: \"${escapeYaml(proposal.topic)}\"`] : []),
+    ...renderAliasFrontmatter(proposal.aliases),
     "sources:",
     ...proposal.sources.map((source) => `  - \"${escapeYaml(sourceLabel(source))}\"`),
     "---",
     "",
     `# ${proposal.title.trim()}`,
     "",
-    proposal.content.trim(),
-    "",
+    closeDanglingCodeFence(proposal.content),
     "## 来源",
     renderSourceList(proposal.sources),
     ""
@@ -248,12 +288,19 @@ export function renderCreatedKnowledgeSystemNote(
     "",
     `# ${proposal.title.trim()}`,
     "",
-    proposal.content.trim(),
-    "",
-    "## 来源",
-    renderSourceList(proposal.sources),
+    closeDanglingCodeFence(proposal.content),
+    // Wiki pages list their own evidence; adding another section repeats the
+    // same links a second time under a different heading.
+    ...(hasSourceSection(proposal.content)
+      ? []
+      : ["## 来源", "", renderSourceList(proposal.sources)]),
     ""
   ].join("\n");
+}
+
+/** True when the body already accounts for where its content came from. */
+function hasSourceSection(content: string): boolean {
+  return /^##\s+(?:来源|原始资料|原始证据)\s*$/mu.test(content);
 }
 
 export function renderCreatedAgentSession(proposal: CreateAgentSessionProposal): string {
@@ -285,12 +332,49 @@ export function renderDailyAppend(
     prefix,
     `## ${formatLocalTimestamp(createdAt)}`,
     "",
-    proposal.content.trim(),
-    "",
+    closeDanglingCodeFence(proposal.content),
     "### 来源",
     renderSourceList(proposal.sources),
     ""
   ].join("\n");
+}
+
+export interface NoteSectionInput {
+  /** Sub-heading without the timestamp. */
+  heading?: string;
+  /** Original question, kept so the section stays searchable. */
+  question?: string;
+  content: string;
+  sources: SourceRef[];
+  createdAt: Date;
+}
+
+/**
+ * Appends one answer as a dated section of an existing note.
+ *
+ * This is what keeps consecutive questions about the same subject in one file
+ * instead of scattering them across near-duplicate notes.
+ */
+export function renderNoteSection(input: NoteSectionInput, currentContent: string): string {
+  const prefix = currentContent.replace(/\s+$/u, "");
+  const heading = input.heading?.trim() || "补充";
+  const lines = [`## ${formatLocalTimestamp(input.createdAt)} · ${heading}`, ""];
+  if (input.question?.trim()) {
+    lines.push(`> 原问题：${input.question.trim()}`, "");
+  }
+  lines.push(closeDanglingCodeFence(input.content).trimEnd());
+  if (input.sources.length) {
+    lines.push("", "### 来源", renderSourceList(input.sources));
+  }
+  lines.push("");
+  return `${prefix ? `${prefix}\n\n` : ""}${lines.join("\n")}`;
+}
+
+function renderAliasFrontmatter(aliases: readonly string[] | undefined): string[] {
+  if (!aliases?.length) {
+    return [];
+  }
+  return ["aliases:", ...aliases.map((alias) => `  - \"${escapeYaml(alias)}\"`)] ;
 }
 
 function renderSourceList(sources: SourceRef[]): string {
@@ -304,7 +388,7 @@ function sourceLabel(source: SourceRef): string {
   if (source.type === "conversation") {
     return "当前会话中的手动记录";
   }
-  return `[[${source.pathOrUrl}]]${source.locator ? ` · ${source.locator}` : ""}`;
+  return `[[${source.pathOrUrl}]]${source.locator ? ` · ${humanizeLocator(source.locator)}` : ""}`;
 }
 
 function escapeYaml(value: string): string {
